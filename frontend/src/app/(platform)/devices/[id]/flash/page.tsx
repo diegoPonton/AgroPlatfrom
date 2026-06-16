@@ -336,7 +336,7 @@ async function sendProvisioningConfig(
   log: (msg: string) => void,
 ): Promise<boolean> {
   const decoder = new TextDecoderStream()
-  const decoderDone = port.readable!.pipeTo(decoder.writable)
+  const decoderDone = port.readable!.pipeTo(decoder.writable as WritableStream<Uint8Array>)
   const reader = decoder.readable.getReader()
 
   try {
