@@ -82,7 +82,7 @@ def device_secrets(request, pk):
     except Device.DoesNotExist:
         return Response(status=404)
 
-    api_url = env('API_PUBLIC_URL', default='http://localhost:8000')
+    api_url = env('API_PUBLIC_URL', default=None) or request.build_absolute_uri('/').rstrip('/')
     cfg = device.config
 
     if device.device_type == 'receptor':
@@ -389,7 +389,7 @@ def device_provision_info(request, pk):
     except Device.DoesNotExist:
         return Response(status=404)
 
-    api_url = env('API_PUBLIC_URL', default='http://localhost:8000')
+    api_url = env('API_PUBLIC_URL', default=None) or request.build_absolute_uri('/').rstrip('/')
     cfg = device.config
 
     if device.device_type == 'receptor':
