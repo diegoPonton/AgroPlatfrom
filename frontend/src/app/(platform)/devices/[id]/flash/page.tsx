@@ -152,7 +152,7 @@ export default function FlashPage() {
       })
 
       addLog('Firmware escrito. Reiniciando ESP32…')
-      await loader.hardReset()
+      await loader.after('hard_reset')
       await transport.disconnect()
 
       // ── 5. Provisioning por serial ────────────────────────────────────────
