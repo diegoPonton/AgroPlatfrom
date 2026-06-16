@@ -88,7 +88,7 @@ function RssiBars({ rssi }: { rssi: number | null }) {
 // ─── Custom nodes ─────────────────────────────────────────────────────────────
 
 function ReceptorNode({ data, selected }: NodeProps) {
-  const d = data as ReceptorItem
+  const d = data as unknown as ReceptorItem
   return (
     <div className={`bg-white border-2 rounded-2xl px-4 py-3 min-w-[210px] shadow-md transition-all ${
       selected ? 'border-blue-500 shadow-blue-200 shadow-lg' : 'border-blue-300 hover:border-blue-400'
@@ -107,7 +107,7 @@ function ReceptorNode({ data, selected }: NodeProps) {
           </span>
         )}
       </div>
-      {d.config?.wifi_ssid && (
+      {!!d.config?.wifi_ssid && (
         <p className="text-xs text-gray-400 truncate mt-1">📶 {String(d.config.wifi_ssid)}</p>
       )}
       <p className="text-xs text-gray-300 font-mono mt-1 truncate">{d.device_id}</p>
@@ -116,7 +116,7 @@ function ReceptorNode({ data, selected }: NodeProps) {
 }
 
 function EmitterNode({ data, selected }: NodeProps) {
-  const d = data as EmitterItem & { unassigned?: boolean }
+  const d = data as unknown as EmitterItem & { unassigned?: boolean }
   return (
     <div className={`bg-white border-2 rounded-2xl px-4 py-3 min-w-[210px] shadow-md transition-all ${
       selected

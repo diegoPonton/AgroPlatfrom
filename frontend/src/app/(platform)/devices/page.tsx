@@ -120,14 +120,14 @@ function DeviceCard({ device, onDelete }: { device: Device; onDelete: () => void
             </p>
           )}
 
-          {!isEmitter && cfg?.wifi_ssid && (
+          {!isEmitter && !!cfg?.wifi_ssid && (
             <p className="text-xs text-gray-500 flex items-center gap-1">
               <span>📶</span>
               <span className="truncate">{String(cfg.wifi_ssid)}</span>
             </p>
           )}
 
-          {isEmitter && cfg?.sleep_minutes && (
+          {isEmitter && !!cfg?.sleep_minutes && (
             <p className="text-xs text-gray-500">
               ⏱ Envía cada {String(cfg.sleep_minutes)} min
             </p>

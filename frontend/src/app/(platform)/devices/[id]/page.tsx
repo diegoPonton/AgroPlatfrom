@@ -255,7 +255,7 @@ function ReceptorDetail({ device }: { device: Device }) {
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                 <XAxis dataKey="time" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
                 <YAxis domain={['auto', 'auto']} tick={{ fontSize: 10 }} unit=" dBm" width={70} />
-                <Tooltip formatter={(v: number) => `${v} dBm`} />
+                <Tooltip formatter={(v) => `${v ?? ''} dBm`} />
                 <Legend />
                 {emitterIds.map((id, i) => (
                   <Line

@@ -25,6 +25,7 @@ interface FirmwareBuild {
   compiled_at: string
   status: 'ready' | 'building' | 'error'
   build_log: string
+  binary?: string | null
 }
 
 interface CreatedDevice {
@@ -272,7 +273,7 @@ export default function FirmwareWizardPage() {
         },
       })
       addLog('Firmware escrito. Reiniciando…')
-      await loader.hardReset()
+      await loader.after('hard_reset')
       await transport.disconnect()
 
       setFlashStatus('provisioning')
@@ -674,7 +675,7 @@ async function sendProvisioningConfig(
   log: (msg: string) => void,
 ): Promise<boolean> {
   const decoder = new TextDecoderStream()
-  const decoderDone = port.readable!.pipeTo(decoder.writable)
+  const decoderDone = port.readable!.pipeTo(decoder.writable as WritableStream<Uint8Array>)
   const reader = decoder.readable.getReader()
   try {
     let buffer = ''
