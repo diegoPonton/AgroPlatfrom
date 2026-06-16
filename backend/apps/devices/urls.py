@@ -10,6 +10,7 @@ urlpatterns = [
     path('devices/<int:pk>/provision/', views.device_provision_info, name='device-provision'),
     path('devices/<int:pk>/gateway-stats/', views.gateway_stats, name='gateway-stats'),
     path('devices/<int:pk>/commands/', views.device_commands, name='device-commands'),
+    path('devices/<int:pk>/rotate-token/', views.rotate_token, name='rotate-token'),
     path('commands/<int:cmd_id>/', views.command_detail, name='command-detail'),
     path('commands/<int:cmd_id>/ack/', views.command_ack, name='command-ack'),
     path('relay/', views.receptor_relay, name='receptor-relay'),

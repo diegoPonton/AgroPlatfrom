@@ -1,3 +1,4 @@
+from django.db.models import OuterRef, Subquery, Count
 from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import status
@@ -7,7 +8,8 @@ from rest_framework.response import Response
 from decouple import config as env
 
 from apps.users.models import Organization
-from .models import Device, DeviceCommand
+from apps.telemetry.models import TelemetryReading
+from .models import Device, DeviceCommand, _gen_token
 from .serializers import DeviceSerializer, DeviceCreateSerializer
 
 
@@ -55,6 +57,20 @@ def device_detail(request, pk):
 
     device.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def rotate_token(request, pk):
+    """Regenera el provisioning_token de un dispositivo."""
+    org = get_user_org(request)
+    try:
+        device = Device.objects.get(pk=pk, organization=org)
+    except Device.DoesNotExist:
+        return Response(status=404)
+    device.provisioning_token = _gen_token()
+    device.save(update_fields=['provisioning_token'])
+    return Response({'provisioning_token': device.provisioning_token})
 
 
 @api_view(['GET'])
@@ -115,16 +131,26 @@ def topology(request):
 
     devices = Device.objects.filter(organization=org).prefetch_related('sensors')
 
-    # Build last RSSI map for all emitters in one pass
-    from apps.telemetry.models import TelemetryReading
-    emitter_ids = [d.id for d in devices if d.device_type == 'emisor']
-    rssi_map = {}
-    if emitter_ids:
-        # One query per emitter but bounded by device count
-        for eid in emitter_ids:
-            reading = TelemetryReading.objects.filter(device_id=eid).only('rssi', 'received_at').first()
-            if reading:
-                rssi_map[eid] = {'rssi': reading.rssi, 'received_at': reading.received_at.isoformat()}
+    # Single subquery: latest RSSI per device
+    latest_rssi_subq = TelemetryReading.objects.filter(
+        device_id=OuterRef('pk')
+    ).order_by('-received_at').values('rssi')[:1]
+
+    latest_at_subq = TelemetryReading.objects.filter(
+        device_id=OuterRef('pk')
+    ).order_by('-received_at').values('received_at')[:1]
+
+    devices = devices.annotate(
+        last_rssi_val=Subquery(latest_rssi_subq),
+        last_reading_at_val=Subquery(latest_at_subq),
+    )
+
+    # Pending commands count per emitter — single bulk query
+    pending_map = dict(
+        DeviceCommand.objects.filter(
+            emitter__organization=org, status='pending'
+        ).values('emitter_id').annotate(cnt=Count('id')).values_list('emitter_id', 'cnt')
+    )
 
     def _base(d):
         data = {
@@ -137,28 +163,28 @@ def topology(request):
             'config': d.config,
         }
         if d.device_type == 'emisor':
-            lr = rssi_map.get(d.id)
-            data['last_rssi'] = lr['rssi'] if lr else None
-            data['last_reading_at'] = lr['received_at'] if lr else None
-            # pending command count
-            data['pending_commands'] = DeviceCommand.objects.filter(
-                emitter=d, status='pending'
-            ).count()
+            data['last_rssi'] = d.last_rssi_val
+            data['last_reading_at'] = d.last_reading_at_val.isoformat() if d.last_reading_at_val else None
+            data['pending_commands'] = pending_map.get(d.id, 0)
         return data
 
     receptors = []
     unassigned = []
 
-    for device in devices:
+    device_list = list(devices)
+    # Build emitter map per gateway
+    emitter_map: dict[int, list] = {}
+    for d in device_list:
+        if d.device_type == 'emisor' and d.assigned_gateway_id:
+            emitter_map.setdefault(d.assigned_gateway_id, []).append(d)
+
+    for device in device_list:
         if device.device_type == 'receptor':
             entry = _base(device)
-            emitters = Device.objects.filter(
-                assigned_gateway=device
-            ).prefetch_related('sensors')
+            emitters = emitter_map.get(device.id, [])
             entry['emitters'] = [_base(e) for e in emitters]
-            # receptor stats: emitter RSSI summary
-            rssi_values = [rssi_map[e.id]['rssi'] for e in emitters if e.id in rssi_map and rssi_map[e.id]['rssi'] is not None]
-            entry['avg_rssi'] = round(sum(rssi_values) / len(rssi_values)) if rssi_values else None
+            rssi_vals = [e.last_rssi_val for e in emitters if e.last_rssi_val is not None]
+            entry['avg_rssi'] = round(sum(rssi_vals) / len(rssi_vals)) if rssi_vals else None
             receptors.append(entry)
         elif device.device_type == 'emisor' and not device.assigned_gateway_id:
             unassigned.append(_base(device))
@@ -169,55 +195,67 @@ def topology(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def gateway_stats(request, pk):
-    """Stats completas del receptor usado como gateway."""
     org = get_user_org(request)
     try:
         device = Device.objects.get(pk=pk, organization=org, device_type='receptor')
     except Device.DoesNotExist:
         return Response(status=404)
 
-    from apps.telemetry.models import TelemetryReading
-
-    readings = TelemetryReading.objects.filter(source_gateway=device.device_id)
-    total = readings.count()
+    readings_qs = TelemetryReading.objects.filter(source_gateway=device.device_id)
+    total = readings_qs.count()
 
     today = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    today_count = readings.filter(received_at__gte=today).count()
+    today_count = readings_qs.filter(received_at__gte=today).count()
 
-    rssi_values = list(readings.filter(rssi__isnull=False).values_list('rssi', flat=True)[:200])
+    rssi_values = list(readings_qs.filter(rssi__isnull=False).values_list('rssi', flat=True)[:200])
     avg_rssi = round(sum(rssi_values) / len(rssi_values)) if rssi_values else None
 
-    emitters = Device.objects.filter(assigned_gateway=device).prefetch_related('sensors')
-    emitter_stats = []
-    for e in emitters:
-        last = TelemetryReading.objects.filter(device=e, source_gateway=device.device_id).first()
-        emitter_stats.append({
+    emitters = Device.objects.filter(
+        assigned_gateway=device
+    ).prefetch_related('sensors').annotate(
+        last_rssi_val=Subquery(
+            TelemetryReading.objects.filter(
+                device_id=OuterRef('pk'), source_gateway=device.device_id
+            ).order_by('-received_at').values('rssi')[:1]
+        )
+    )
+
+    emitter_stats = [
+        {
             'id': e.id,
             'name': e.name,
             'device_id': e.device_id,
             'is_online': e.is_online,
             'last_seen': e.last_seen.isoformat() if e.last_seen else None,
-            'last_rssi': last.rssi if last else None,
+            'last_rssi': e.last_rssi_val,
             'sensors': [{'sensor_type': s.sensor_type} for s in e.sensors.all()],
-        })
+        }
+        for e in emitters
+    ]
 
-    # Last 60 readings for RSSI chart (all emitters combined)
-    recent = readings.select_related('device').order_by('-received_at')[:60]
-    rssi_history = [{
-        'received_at': r.received_at.isoformat(),
-        'rssi': r.rssi,
-        'device_id': r.device.device_id,
-        'device_name': r.device.name,
-    } for r in reversed(list(recent))]
+    recent = list(
+        readings_qs.select_related('device').order_by('-received_at')[:60]
+    )
+    rssi_history = [
+        {
+            'received_at': r.received_at.isoformat(),
+            'rssi': r.rssi,
+            'device_id': r.device.device_id,
+            'device_name': r.device.name,
+        }
+        for r in reversed(recent)
+    ]
 
-    # Last 20 for activity log
-    activity = [{
-        'received_at': r.received_at.isoformat(),
-        'rssi': r.rssi,
-        'device_id': r.device.device_id,
-        'device_name': r.device.name,
-        'payload_keys': list((r.payload or {}).keys()),
-    } for r in readings.select_related('device').order_by('-received_at')[:20]]
+    activity = [
+        {
+            'received_at': r.received_at.isoformat(),
+            'rssi': r.rssi,
+            'device_id': r.device.device_id,
+            'device_name': r.device.name,
+            'payload_keys': list((r.payload or {}).keys()),
+        }
+        for r in readings_qs.select_related('device').order_by('-received_at')[:20]
+    ]
 
     return Response({
         'total_relayed': total,
@@ -293,10 +331,6 @@ def _cmd_dict(cmd):
 @api_view(['GET', 'POST'])
 @permission_classes([IsAuthenticated])
 def device_commands(request, pk):
-    """
-    GET  /api/devices/<emitter_id>/commands/ — lista comandos del emisor
-    POST /api/devices/<emitter_id>/commands/ — crea un nuevo comando
-    """
     org = get_user_org(request)
     try:
         device = Device.objects.get(pk=pk, organization=org, device_type='emisor')
@@ -323,10 +357,6 @@ def device_commands(request, pk):
 @api_view(['PATCH', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def command_detail(request, cmd_id):
-    """
-    PATCH /api/commands/<id>/ — actualiza estado (desde UI: cancelar)
-    DELETE /api/commands/<id>/ — elimina comando pendiente
-    """
     org = get_user_org(request)
     try:
         cmd = DeviceCommand.objects.get(pk=cmd_id, emitter__organization=org)
@@ -346,18 +376,26 @@ def command_detail(request, cmd_id):
     return Response(_cmd_dict(cmd))
 
 
+# Simple in-memory rate limiter using Django cache
+def _check_rate_limit(key: str, max_calls: int = 30, window: int = 60) -> bool:
+    """Returns True if allowed, False if rate limited."""
+    from django.core.cache import cache
+    cache_key = f'rl:{key}'
+    current = cache.get(cache_key, 0)
+    if current >= max_calls:
+        return False
+    cache.set(cache_key, current + 1, timeout=window)
+    return True
+
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def receptor_relay(request):
-    """
-    GET /api/relay/?token=<provisioning_token>&emitter=<emitter_device_id>
-
-    El receptor llama esto justo tras un POST de telemetría exitoso.
-    Devuelve los comandos pendientes SOLO para ese emisor y los marca como 'relayed'.
-    El receptor los retransmite por LoRa mientras el emisor aún está despierto (~7s).
-    """
     token = request.query_params.get('token', '')
     emitter_device_id = request.query_params.get('emitter', '')
+
+    if not _check_rate_limit(f'relay:{token}', max_calls=60, window=60):
+        return Response({'detail': 'Rate limit exceeded.'}, status=429)
 
     try:
         receptor = Device.objects.get(device_type='receptor', provisioning_token=token)
@@ -390,11 +428,13 @@ def receptor_relay(request):
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def command_ack(request, cmd_id):
-    """
-    POST /api/commands/<cmd_id>/ack/?token=<emitter_provisioning_token>
-    El emisor confirma (ACK) que ejecutó el comando.
-    """
     token = request.query_params.get('token')
+    if not token:
+        return Response({'detail': 'Token requerido.'}, status=401)
+
+    if not _check_rate_limit(f'ack:{token}', max_calls=120, window=60):
+        return Response({'detail': 'Rate limit exceeded.'}, status=429)
+
     try:
         cmd = DeviceCommand.objects.get(pk=cmd_id, emitter__provisioning_token=token)
     except DeviceCommand.DoesNotExist:

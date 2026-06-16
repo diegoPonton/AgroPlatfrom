@@ -128,3 +128,94 @@
     @apply font-sans;
   }
 }
+
+/* ─── AgroESP32 Animations ────────────────────────────────────────────────── */
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slide-in-left {
+  from { opacity: 0; transform: translateX(-12px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.93); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+@keyframes trace-h {
+  0%   { transform: scaleX(0); transform-origin: left; }
+  50%  { transform: scaleX(1); transform-origin: left; }
+  51%  { transform: scaleX(1); transform-origin: right; }
+  100% { transform: scaleX(0); transform-origin: right; }
+}
+
+@keyframes trace-v {
+  0%   { transform: scaleY(0); transform-origin: top; }
+  50%  { transform: scaleY(1); transform-origin: top; }
+  51%  { transform: scaleY(1); transform-origin: bottom; }
+  100% { transform: scaleY(0); transform-origin: bottom; }
+}
+
+@keyframes lora-ring {
+  0%   { transform: scale(0.5); opacity: 0.8; }
+  100% { transform: scale(3);   opacity: 0; }
+}
+
+@keyframes data-float {
+  0%   { transform: translateY(0)   scale(1);   opacity: 1; }
+  100% { transform: translateY(-40px) scale(0.5); opacity: 0; }
+}
+
+@keyframes sensor-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
+  50%       { box-shadow: 0 0 0 8px rgba(34, 197, 94, 0); }
+}
+
+@keyframes online-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.6; transform: scale(0.85); }
+}
+
+.animate-fade-in        { animation: fade-in 0.6s ease both; }
+.animate-slide-up       { animation: slide-up 0.5s cubic-bezier(0.22,1,0.36,1) both; }
+.animate-slide-in-left  { animation: slide-in-left 0.4s cubic-bezier(0.22,1,0.36,1) both; }
+.animate-scale-in       { animation: scale-in 0.35s cubic-bezier(0.22,1,0.36,1) both; }
+.animate-trace-h        { animation: trace-h 2.4s ease-in-out infinite; }
+.animate-trace-v        { animation: trace-v 2.4s ease-in-out infinite 1.2s; }
+.animate-lora-ring      { animation: lora-ring 1.6s ease-out infinite; }
+.animate-data-float     { animation: data-float 1.8s ease-in infinite; }
+.animate-sensor-pulse   { animation: sensor-pulse 2s ease-in-out infinite; }
+.animate-online-dot     { animation: online-dot 1.5s ease-in-out infinite; }
+
+/* Card hover lift */
+.card-lift {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.card-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px -4px rgba(0,0,0,0.12);
+}
+
+/* Sensor status glow */
+.status-online  { color: #22c55e; text-shadow: 0 0 8px rgba(34,197,94,0.5); }
+.status-offline { color: #94a3b8; }
+
+/* LoRa wave overlay (decorative) */
+.lora-wave {
+  position: absolute;
+  border-radius: 50%;
+  border: 1.5px solid rgba(34, 197, 94, 0.4);
+  animation: lora-ring 2s ease-out infinite;
+  pointer-events: none;
+}
+.lora-wave:nth-child(2) { animation-delay: 0.6s; }
+.lora-wave:nth-child(3) { animation-delay: 1.2s; }

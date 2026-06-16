@@ -513,13 +513,29 @@ export default function DeviceDetailPage() {
   useEffect(() => {
     if (!device?.device_id || device.device_type !== 'emisor') return
     const apiBase = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
-    const ws = new WebSocket(`${apiBase.replace(/^http/, 'ws')}/ws/devices/${device.device_id}/`)
+    const token = typeof window !== 'undefined' ? localStorage.getItem('access_token') ?? '' : ''
+    const url = `${apiBase.replace(/^http/, 'ws')}/ws/devices/${device.device_id}/?token=${token}`
+    const ws = new WebSocket(url)
     wsRef.current = ws
+
     ws.onmessage = (e) => {
-      const data = JSON.parse(e.data) as TelemetryReading
-      setLiveReadings((prev) => [data, ...prev].slice(0, 100))
+      try {
+        const data = JSON.parse(e.data) as TelemetryReading
+        if (data && typeof data === 'object') {
+          setLiveReadings((prev) => [data, ...prev].slice(0, 100))
+        }
+      } catch {
+        // malformed frame — ignore
+      }
     }
-    return () => ws.close()
+
+    ws.onerror = () => { ws.close() }
+
+    ws.onclose = (ev) => {
+      if (ev.code === 4001) console.warn('WS auth rejected — token may be expired')
+    }
+
+    return () => { ws.close() }
   }, [device?.device_id, device?.device_type])
 
   if (isLoading) {

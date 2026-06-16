@@ -9,6 +9,7 @@ import { es } from 'date-fns/locale'
 import { getDevices, deleteDevice, type Device } from '@/lib/devices'
 import { Skeleton } from '@/components/ui/skeleton'
 import { toast } from 'sonner'
+import { LoraIndicator } from '@/components/lora-indicator'
 
 type Filter = 'todos' | 'emisor' | 'receptor'
 
@@ -75,29 +76,34 @@ function DeviceCard({ device, onDelete }: { device: Device; onDelete: () => void
 
   return (
     <div
-      className={`group relative bg-white rounded-2xl border-2 transition-all duration-200 hover:shadow-lg cursor-pointer overflow-hidden ${
+      className={`group relative bg-white rounded-2xl border-2 transition-all duration-200 hover:shadow-lg hover:-translate-y-0.5 cursor-pointer overflow-hidden card-lift ${
         device.is_online ? 'border-green-200 hover:border-green-400' : 'border-gray-200 hover:border-gray-300'
       }`}
       onClick={() => router.push(`/devices/${device.id}`)}
     >
-      {/* Online stripe */}
-      <div className={`absolute top-0 left-0 right-0 h-1 ${device.is_online ? 'bg-green-400' : 'bg-gray-200'}`} />
+      {/* Online stripe with glow */}
+      <div className={`absolute top-0 left-0 right-0 h-1 ${device.is_online ? 'bg-gradient-to-r from-green-400 via-emerald-300 to-green-400' : 'bg-gray-200'}`} />
 
       <div className="p-5 pt-4">
         {/* Header */}
         <div className="flex items-start justify-between gap-2 mb-3">
           <div className="flex items-center gap-2 min-w-0">
-            <span className="text-2xl flex-shrink-0">{isEmitter ? '📡' : '🔌'}</span>
+            <div className="relative flex-shrink-0">
+              <span className="text-2xl">{isEmitter ? '📡' : '🔌'}</span>
+              {device.is_online && isEmitter && (
+                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-green-400 animate-online-dot" />
+              )}
+            </div>
             <div className="min-w-0">
               <p className="font-semibold text-gray-900 truncate leading-tight">{device.name}</p>
               <code className="text-xs text-gray-400 font-mono">{device.device_id}</code>
             </div>
           </div>
-          <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium flex-shrink-0 ${
-            device.is_online ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
-          }`}>
-            <div className={`w-1.5 h-1.5 rounded-full ${device.is_online ? 'bg-green-500' : 'bg-gray-400'}`} />
-            {device.is_online ? 'Online' : 'Offline'}
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            <LoraIndicator online={device.is_online} size="sm" />
+            <span className={`text-xs font-medium ${device.is_online ? 'text-green-700' : 'text-gray-500'}`}>
+              {device.is_online ? 'Online' : 'Offline'}
+            </span>
           </div>
         </div>
 
@@ -302,8 +308,10 @@ export default function DevicesPage() {
                 <h2 className="font-semibold text-gray-700">Receptores <span className="text-gray-400 font-normal">({filteredReceptors.length})</span></h2>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {filteredReceptors.map((d) => (
-                  <DeviceCard key={d.id} device={d} onDelete={() => setToDelete(d)} />
+                {filteredReceptors.map((d, i) => (
+                  <div key={d.id} className="animate-scale-in" style={{ animationDelay: `${i * 50}ms` }}>
+                    <DeviceCard device={d} onDelete={() => setToDelete(d)} />
+                  </div>
                 ))}
               </div>
             </section>
@@ -317,8 +325,10 @@ export default function DevicesPage() {
                 <h2 className="font-semibold text-gray-700">Emisores <span className="text-gray-400 font-normal">({filteredEmitters.length})</span></h2>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {filteredEmitters.map((d) => (
-                  <DeviceCard key={d.id} device={d} onDelete={() => setToDelete(d)} />
+                {filteredEmitters.map((d, i) => (
+                  <div key={d.id} className="animate-scale-in" style={{ animationDelay: `${i * 50}ms` }}>
+                    <DeviceCard device={d} onDelete={() => setToDelete(d)} />
+                  </div>
                 ))}
               </div>
             </section>

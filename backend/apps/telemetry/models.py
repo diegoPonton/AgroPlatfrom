@@ -7,7 +7,7 @@ class TelemetryReading(models.Model):
     received_at = models.DateTimeField(auto_now_add=True, db_index=True)
     payload = models.JSONField()
     rssi = models.IntegerField(null=True, blank=True)
-    source_gateway = models.CharField(max_length=100, blank=True)
+    source_gateway = models.CharField(max_length=100, blank=True, db_index=True)
 
     class Meta:
         ordering = ['-received_at']
