@@ -5,6 +5,7 @@ urlpatterns = [
     path('devices/', views.device_list, name='device-list'),
     path('devices/receptors/', views.receptor_list, name='receptor-list'),
     path('devices/topology/', views.topology, name='topology'),
+    path('devices/gps-map/', views.gps_map, name='gps-map'),
     path('devices/<int:pk>/', views.device_detail, name='device-detail'),
     path('devices/<int:pk>/secrets/', views.device_secrets, name='device-secrets'),
     path('devices/<int:pk>/provision/', views.device_provision_info, name='device-provision'),

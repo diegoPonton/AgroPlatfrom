@@ -269,6 +269,109 @@ def gateway_stats(request, pk):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+def gps_map(request):
+    """Returns all devices with their latest GPS position plus Haversine distances for connected pairs."""
+    import math
+
+    org = get_user_org(request)
+    if not org:
+        return Response({'detail': 'Sin organización asignada.'}, status=400)
+
+    devices = Device.objects.filter(organization=org).prefetch_related('sensors')
+
+    def _extract_gps(payload, config) -> dict | None:
+        if payload:
+            gps_blob = payload.get('gps') or payload.get('GPS') or {}
+            if isinstance(gps_blob, dict):
+                lat = gps_blob.get('lat') or gps_blob.get('latitude')
+                lng = gps_blob.get('lng') or gps_blob.get('lon') or gps_blob.get('longitude')
+                if lat is not None and lng is not None:
+                    try:
+                        return {
+                            'lat': float(lat), 'lng': float(lng),
+                            'alt': float(gps_blob['alt']) if gps_blob.get('alt') is not None else None,
+                            'sats': gps_blob.get('sats'),
+                            'hdop': gps_blob.get('hdop'),
+                            'source': 'sensor',
+                        }
+                    except (TypeError, ValueError):
+                        pass
+            for lk, lonk in (('lat', 'lng'), ('lat', 'lon'), ('latitude', 'longitude')):
+                lat = payload.get(lk)
+                lng = payload.get(lonk)
+                if lat is not None and lng is not None:
+                    try:
+                        return {'lat': float(lat), 'lng': float(lng), 'source': 'sensor'}
+                    except (TypeError, ValueError):
+                        pass
+        if config:
+            loc = config.get('location')
+            if isinstance(loc, dict):
+                lat, lng = loc.get('lat'), loc.get('lng')
+                if lat is not None and lng is not None:
+                    try:
+                        return {'lat': float(lat), 'lng': float(lng), 'source': 'manual'}
+                    except (TypeError, ValueError):
+                        pass
+        return None
+
+    def _haversine(lat1, lng1, lat2, lng2) -> int:
+        R = 6_371_000
+        phi1, phi2 = math.radians(lat1), math.radians(lat2)
+        a = (math.sin(math.radians(lat2 - lat1) / 2) ** 2
+             + math.cos(phi1) * math.cos(phi2) * math.sin(math.radians(lng2 - lng1) / 2) ** 2)
+        return round(2 * R * math.asin(math.sqrt(min(1, a))))
+
+    latest_payload_subq = TelemetryReading.objects.filter(
+        device_id=OuterRef('pk')
+    ).order_by('-received_at').values('payload')[:1]
+
+    latest_rssi_subq = TelemetryReading.objects.filter(
+        device_id=OuterRef('pk')
+    ).order_by('-received_at').values('rssi')[:1]
+
+    devices_ann = list(devices.annotate(
+        latest_payload=Subquery(latest_payload_subq),
+        last_rssi_val=Subquery(latest_rssi_subq),
+    ))
+
+    gps_by_id: dict[int, dict] = {}
+    nodes = []
+    for d in devices_ann:
+        gps = _extract_gps(d.latest_payload, d.config)
+        nodes.append({
+            'id': d.id,
+            'device_id': d.device_id,
+            'name': d.name,
+            'device_type': d.device_type,
+            'is_online': d.is_online,
+            'last_seen': d.last_seen.isoformat() if d.last_seen else None,
+            'sensors': [{'sensor_type': s.sensor_type} for s in d.sensors.all()],
+            'gps': gps,
+            'last_rssi': d.last_rssi_val,
+            'assigned_gateway_id': d.assigned_gateway_id,
+            'config': d.config,
+        })
+        if gps:
+            gps_by_id[d.id] = gps
+
+    links = []
+    for d in devices_ann:
+        if d.device_type == 'emisor' and d.assigned_gateway_id:
+            ge = gps_by_id.get(d.id)
+            gr = gps_by_id.get(d.assigned_gateway_id)
+            if ge and gr:
+                links.append({
+                    'emitter_id': d.id,
+                    'receptor_id': d.assigned_gateway_id,
+                    'distance_m': _haversine(ge['lat'], ge['lng'], gr['lat'], gr['lng']),
+                })
+
+    return Response({'nodes': nodes, 'links': links})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def receptor_list(request):
     org = get_user_org(request)
     if not org:

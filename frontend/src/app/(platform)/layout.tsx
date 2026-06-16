@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 const NAV = [
   { href: '/devices',        label: 'Dispositivos',  icon: '📡', desc: 'Nodos y sensores' },
   { href: '/topology',       label: 'Topología',     icon: '🗺️', desc: 'Red LoRa visual' },
+  { href: '/map',            label: 'Mapa GPS',      icon: '🛰️', desc: 'Ubicación en campo' },
   { href: '/firmware',       label: 'Firmware',      icon: '💾', desc: 'Builds y versiones' },
   { href: '/firmware/wizard',label: 'Nuevo nodo',    icon: '✨', desc: 'Wizard de alta' },
   { href: '/guide',          label: 'Guía',          icon: '📖', desc: 'Documentación' },
