@@ -240,7 +240,7 @@ export default function FlashPage() {
       {device && (
         <Card>
           <CardHeader><CardTitle className="text-base">Config que se enviará al dispositivo</CardTitle></CardHeader>
-          <CardContent className="text-sm space-y-2">
+          <CardContent className="text-sm space-y-3">
             {device.device_type === 'emisor' ? (
               <div className="grid grid-cols-2 gap-2">
                 <div><span className="text-muted-foreground">Device ID:</span> <code className="bg-gray-100 px-1 rounded text-xs">{device.device_id}</code></div>
@@ -252,11 +252,32 @@ export default function FlashPage() {
                 )}
               </div>
             ) : (
-              <div className="grid grid-cols-2 gap-2">
-                <div><span className="text-muted-foreground">WiFi:</span> {String(device.config?.wifi_ssid ?? '—')}</div>
-                <div><span className="text-muted-foreground">Token:</span> <code className="text-xs bg-gray-100 px-1 rounded">{device.provisioning_token.slice(0, 12)}…</code></div>
+              <div className="space-y-2">
+                <div><span className="text-muted-foreground">WiFi:</span> <strong>{String(device.config?.wifi_ssid ?? '—')}</strong></div>
+                <div>
+                  <span className="text-muted-foreground">Token del dispositivo:</span>
+                  <div className="flex items-center gap-2 mt-1">
+                    <code className="text-xs bg-gray-100 px-2 py-1 rounded break-all flex-1">{device.provisioning_token}</code>
+                    <button
+                      type="button"
+                      onClick={() => { navigator.clipboard.writeText(device.provisioning_token); toast.success('Token copiado') }}
+                      className="flex-shrink-0 text-xs border rounded px-2 py-1 hover:bg-gray-50"
+                    >
+                      Copiar
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
+
+            {/* Descarga secrets.h para usar con PlatformIO */}
+            <div className="border-t pt-3">
+              <p className="text-xs text-muted-foreground mb-2">
+                ¿Usas PlatformIO? Descargá el <code className="bg-gray-100 px-0.5 rounded">secrets.h</code> y copialo a <code className="bg-gray-100 px-0.5 rounded">src/{device.device_type}/secrets.h</code>
+              </p>
+              <DownloadSecretsButton deviceId={device.id} />
+            </div>
+
             <p className="text-xs text-muted-foreground">
               Para cambiar estos valores editá el dispositivo y volvé a flashear.
             </p>
@@ -323,6 +344,27 @@ export default function FlashPage() {
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+// ──────────────────────────────────────────────────
+// Descarga secrets.h para uso con PlatformIO
+// ──────────────────────────────────────────────────
+function DownloadSecretsButton({ deviceId }: { deviceId: number }) {
+  async function download() {
+    const res = await api.get(`/api/devices/${deviceId}/secrets/`, { responseType: 'blob' })
+    const url = URL.createObjectURL(new Blob([res.data as BlobPart]))
+    const a = document.createElement('a'); a.href = url; a.download = 'secrets.h'; a.click()
+    URL.revokeObjectURL(url)
+  }
+  return (
+    <button
+      type="button"
+      onClick={download}
+      className="inline-flex items-center gap-1.5 text-green-700 border border-green-300 rounded px-3 py-1.5 hover:bg-green-50 transition-colors text-xs font-medium"
+    >
+      ↓ Descargar secrets.h
+    </button>
   )
 }
 
