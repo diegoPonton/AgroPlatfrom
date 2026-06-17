@@ -26,6 +26,7 @@ interface FirmwareBuild {
   status: 'ready' | 'building' | 'error'
   build_log: string
   has_binary?: boolean
+  flash_offset?: number  // 0x0 = merged binary, 0x10000 = app only
 }
 
 interface CreatedDevice {
@@ -346,7 +347,7 @@ export default function FirmwareWizardPage() {
       await loader.eraseFlash()
       addLog('Escribiendo firmware…')
       await loader.writeFlash({
-        fileArray: [{ data: binary, address: 0x1000 }],
+        fileArray: [{ data: binary, address: selectedBuild.flash_offset ?? 0x0 }],
         flashSize: 'keep', flashMode: 'keep', flashFreq: 'keep',
         eraseAll: false, compress: true,
         reportProgress: (_: number, written: number, total: number) => {

@@ -16,6 +16,7 @@ interface FirmwareBuild {
   target: 'emisor' | 'receptor'
   notes: string
   compiled_at: string
+  flash_offset?: number  // 0x0 = merged binary, 0x10000 = app only
 }
 
 type FlashStatus = 'idle' | 'connecting' | 'downloading' | 'flashing' | 'provisioning' | 'done' | 'error'
@@ -138,7 +139,7 @@ export default function FlashPage() {
 
       addLog('Escribiendo firmware…')
       await loader.writeFlash({
-        fileArray: [{ data: firmwareBinary, address: 0x1000 }],
+        fileArray: [{ data: firmwareBinary, address: selectedFirmware.flash_offset ?? 0x0 }],
         flashSize: 'keep',
         flashMode: 'keep',
         flashFreq: 'keep',

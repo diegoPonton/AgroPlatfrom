@@ -41,6 +41,20 @@ def _build_tool():
     return env('BUILD_TOOL', default='platformio')
 
 
+def _find_boot_app0() -> str | None:
+    """Busca boot_app0.bin en la instalación del framework de Arduino ESP32."""
+    import glob as _glob
+    patterns = [
+        os.path.expanduser('~/.platformio/packages/framework-arduinoespressif32*/tools/partitions/boot_app0.bin'),
+        '/root/.platformio/packages/framework-arduinoespressif32*/tools/partitions/boot_app0.bin',
+    ]
+    for pattern in patterns:
+        matches = _glob.glob(pattern)
+        if matches:
+            return matches[0]
+    return None
+
+
 # ---------------------------------------------------------------------------
 # board_config.h generators
 # ---------------------------------------------------------------------------
@@ -235,23 +249,57 @@ def _run_build(build_pk: int, target: str, device: Device):
                 build.save()
                 return
 
-            # Encontrar el .bin generado
-            import glob
-            bins = glob.glob(bin_glob)
-            if not bins:
-                # PlatformIO fallback path
-                alt = os.path.join(tmpdir, '.pio', 'build', target, 'firmware.bin')
-                bins = [alt] if os.path.exists(alt) else []
+            pio_build_dir = os.path.join(tmpdir, '.pio', 'build', target)
 
-            if not bins:
+            app_bin         = os.path.join(pio_build_dir, 'firmware.bin')
+            bootloader_bin  = os.path.join(pio_build_dir, 'bootloader.bin')
+            partitions_bin  = os.path.join(pio_build_dir, 'partitions.bin')
+
+            # boot_app0.bin viene del framework de Arduino para ESP32
+            boot_app0_bin = _find_boot_app0()
+
+            missing = [p for p in [app_bin, bootloader_bin, partitions_bin] if not os.path.exists(p)]
+            if missing:
                 build.status = 'error'
-                build.build_log += f'\n❌ firmware.bin no encontrado'
+                build.build_log += f'\n❌ Binarios faltantes: {missing}'
                 build.save()
                 return
 
-            bin_path = bins[0]
-            filename  = f'firmware_{target}_{device.device_id}_v{build.version}.bin'
-            with open(bin_path, 'rb') as f:
+            # Fusionar todos los binarios en uno solo para flashear desde 0x0
+            merged_bin = os.path.join(tmpdir, 'merged.bin')
+            merge_args = [
+                'python3', '-m', 'esptool',
+                '--chip', 'esp32',
+                'merge_bin',
+                '-o', merged_bin,
+                '--flash_mode', 'dio',
+                '--flash_freq', '40m',
+                '--flash_size', '4MB',
+                '0x1000',  bootloader_bin,
+                '0x8000',  partitions_bin,
+            ]
+            if boot_app0_bin:
+                merge_args += ['0xe000', boot_app0_bin]
+            merge_args += ['0x10000', app_bin]
+
+            build.build_log += '\nFusionando binarios con esptool merge_bin…\n'
+            build.save(update_fields=['build_log'])
+
+            merge_result = subprocess.run(merge_args, capture_output=True, text=True, timeout=60)
+            build.build_log += (merge_result.stdout + merge_result.stderr)[-2000:]
+
+            if merge_result.returncode != 0 or not os.path.exists(merged_bin):
+                # Fallback: servir solo el app bin (el usuario deberá tener bootloader)
+                build.build_log += '\n⚠️ merge_bin falló — usando firmware.bin sin fusionar (flash en 0x10000)'
+                final_bin = app_bin
+                build.flash_offset = 0x10000
+            else:
+                build.build_log += '\n✅ Binario fusionado listo (flashear desde 0x0)'
+                final_bin = merged_bin
+                build.flash_offset = 0x0
+
+            filename = f'firmware_{target}_{device.device_id}_v{build.version}.bin'
+            with open(final_bin, 'rb') as f:
                 build.binary.save(filename, File(f), save=False)
 
             build.status = 'ready'
@@ -379,12 +427,13 @@ def firmware_build_status(request, pk):
     except FirmwareBuild.DoesNotExist:
         return Response(status=404)
     return Response({
-        'id':        build.pk,
-        'status':    build.status,
-        'build_log': build.build_log,
-        'version':   build.version,
-        'target':    build.target,
-        'has_binary': bool(build.binary),
+        'id':          build.pk,
+        'status':      build.status,
+        'build_log':   build.build_log,
+        'version':     build.version,
+        'target':      build.target,
+        'has_binary':  bool(build.binary),
+        'flash_offset': build.flash_offset,
     })
 
 

@@ -18,6 +18,8 @@ class FirmwareBuild(models.Model):
     compiled_at = models.DateTimeField(auto_now_add=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='ready')
     build_log = models.TextField(blank=True)
+    # Dirección de flash: 0x0 para merged binary, 0x10000 para app-only
+    flash_offset = models.IntegerField(default=0)
 
     def __str__(self):
         return f"{self.target} v{self.version}"
