@@ -55,6 +55,29 @@ def _find_boot_app0() -> str | None:
     return None
 
 
+def _merge_bins(sections: list[tuple[int, str]], output_path: str) -> None:
+    """
+    Fusiona binarios ESP32 en un solo archivo listo para flashear desde 0x0.
+    sections: lista de (address, filepath) ordenada por address.
+    Las zonas sin datos se rellenan con 0xFF (estado de flash borrado).
+    """
+    sections = sorted(sections, key=lambda x: x[0])
+    # Calcular tamaño total
+    last_addr, last_path = sections[-1]
+    total = last_addr + os.path.getsize(last_path)
+    # Alinear a 4KB
+    total = (total + 0xFFF) & ~0xFFF
+
+    buf = bytearray(b'\xff' * total)
+    for addr, path in sections:
+        with open(path, 'rb') as f:
+            data = f.read()
+        buf[addr:addr + len(data)] = data
+
+    with open(output_path, 'wb') as f:
+        f.write(buf)
+
+
 # ---------------------------------------------------------------------------
 # board_config.h generators
 # ---------------------------------------------------------------------------
@@ -267,36 +290,31 @@ def _run_build(build_pk: int, target: str, device: Device):
 
             # Fusionar todos los binarios en uno solo para flashear desde 0x0
             merged_bin = os.path.join(tmpdir, 'merged.bin')
-            merge_args = [
-                'python3', '-m', 'esptool',
-                '--chip', 'esp32',
-                'merge_bin',
-                '-o', merged_bin,
-                '--flash_mode', 'dio',
-                '--flash_freq', '40m',
-                '--flash_size', '4MB',
-                '0x1000',  bootloader_bin,
-                '0x8000',  partitions_bin,
-            ]
-            if boot_app0_bin:
-                merge_args += ['0xe000', boot_app0_bin]
-            merge_args += ['0x10000', app_bin]
-
-            build.build_log += '\nFusionando binarios con esptool merge_bin…\n'
+            build.build_log += '\nFusionando binarios (Python nativo)…\n'
             build.save(update_fields=['build_log'])
 
-            merge_result = subprocess.run(merge_args, capture_output=True, text=True, timeout=60)
-            build.build_log += (merge_result.stdout + merge_result.stderr)[-2000:]
+            try:
+                sections = [
+                    (0x1000,  bootloader_bin),
+                    (0x8000,  partitions_bin),
+                    (0x10000, app_bin),
+                ]
+                if boot_app0_bin:
+                    sections.append((0xe000, boot_app0_bin))
+                    build.build_log += f'boot_app0: {boot_app0_bin}\n'
+                else:
+                    build.build_log += '⚠️ boot_app0.bin no encontrado — se omite\n'
 
-            if merge_result.returncode != 0 or not os.path.exists(merged_bin):
-                # Fallback: servir solo el app bin (el usuario deberá tener bootloader)
-                build.build_log += '\n⚠️ merge_bin falló — usando firmware.bin sin fusionar (flash en 0x10000)'
-                final_bin = app_bin
-                build.flash_offset = 0x10000
-            else:
-                build.build_log += '\n✅ Binario fusionado listo (flashear desde 0x0)'
+                build.build_log += f'Secciones: {[(hex(a), os.path.basename(p)) for a,p in sorted(sections)]}\n'
+                _merge_bins(sections, merged_bin)
+                merged_size = os.path.getsize(merged_bin)
+                build.build_log += f'✅ Binario fusionado: {merged_size} bytes (flashear desde 0x0)\n'
                 final_bin = merged_bin
                 build.flash_offset = 0x0
+            except Exception as merge_exc:
+                build.build_log += f'\n⚠️ Merge falló ({merge_exc}) — usando firmware.bin sin fusionar (flash en 0x10000)\n'
+                final_bin = app_bin
+                build.flash_offset = 0x10000
 
             filename = f'firmware_{target}_{device.device_id}_v{build.version}.bin'
             with open(final_bin, 'rb') as f:
