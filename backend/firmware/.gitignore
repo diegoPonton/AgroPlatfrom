@@ -1,0 +1,3 @@
+.pio/
+src/emisor/secrets.h
+src/receptor/secrets.h

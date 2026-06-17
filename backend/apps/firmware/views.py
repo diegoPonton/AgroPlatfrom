@@ -33,10 +33,7 @@ def _get_device(pk, org):
 
 
 def _firmware_src():
-    return env(
-        'FIRMWARE_SOURCE_PATH',
-        default=r'C:\Users\diego\OneDrive\Documentos\PlatformIO\Projects\agroESP32_firmware',
-    )
+    return env('FIRMWARE_SOURCE_PATH', default='/firmware')
 
 
 def _build_tool():
