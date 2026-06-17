@@ -189,13 +189,28 @@ def _fire_webhook(rule, event, device, value):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def device_history(request, pk):
-    """Historial de telemetría de un dispositivo."""
+    """
+    Historial de telemetría de un dispositivo.
+    Query params:
+      hours=N  — últimas N horas (1,6,12,24,48,96,168). Por defecto 24.
+      limit=N  — cap de registros (máx 2000). Por defecto 500.
+    """
+    from django.utils import timezone
+    from datetime import timedelta
+
     org = Organization.objects.filter(members=request.user).first()
     try:
         device = Device.objects.get(pk=pk, organization=org)
     except Device.DoesNotExist:
         return Response(status=404)
 
-    limit = min(int(request.query_params.get('limit', 100)), 500)
-    readings = TelemetryReading.objects.filter(device=device).order_by('-received_at')[:limit]
+    hours = min(int(request.query_params.get('hours', 24)), 168)
+    limit = min(int(request.query_params.get('limit', 500)), 2000)
+    since = timezone.now() - timedelta(hours=hours)
+
+    readings = (
+        TelemetryReading.objects
+        .filter(device=device, received_at__gte=since)
+        .order_by('received_at')[:limit]
+    )
     return Response(TelemetryReadingSerializer(readings, many=True).data)

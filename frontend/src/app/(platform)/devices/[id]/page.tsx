@@ -1,12 +1,13 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { useParams } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
 import { format, formatDistanceToNow } from 'date-fns'
 import { es } from 'date-fns/locale'
 import Link from 'next/link'
 import { getDevice, getTelemetryHistory, type Device } from '@/lib/devices'
+// getTelemetryHistory is used inside EmitterDetail component
 import { api } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -344,27 +345,95 @@ function InfoRow({ label, value, icon, mono }: { label: string; value: string; i
 
 // ─── EMISOR detail ────────────────────────────────────────────────────────────
 
-function EmitterDetail({ device, liveReadings, history }: {
+const RANGE_OPTIONS = [
+  { label: '1 h',   hours: 1   },
+  { label: '6 h',   hours: 6   },
+  { label: '12 h',  hours: 12  },
+  { label: '24 h',  hours: 24  },
+  { label: '2 días', hours: 48  },
+  { label: '4 días', hours: 96  },
+  { label: '7 días', hours: 168 },
+]
+
+function timeFormat(received_at: string, hours: number) {
+  const d = new Date(received_at)
+  if (hours <= 24) return format(d, 'HH:mm')
+  return format(d, 'dd/MM HH:mm')
+}
+
+function SensorChart({
+  data,
+  dataKey,
+  color,
+  unit,
+  label,
+}: {
+  data: Record<string, unknown>[]
+  dataKey: string
+  color: string
+  unit: string
+  label: string
+}) {
+  const hasData = data.some((d) => d[dataKey] != null)
+  if (!hasData) return null
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-semibold">{label}</CardTitle>
+      </CardHeader>
+      <CardContent className="pt-0">
+        <ResponsiveContainer width="100%" height={180}>
+          <LineChart data={data} margin={{ top: 4, right: 8, left: -10, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+            <XAxis dataKey="time" tick={{ fontSize: 9 }} interval="preserveStartEnd" />
+            <YAxis tick={{ fontSize: 9 }} unit={` ${unit}`} width={55} domain={['auto', 'auto']} />
+            <Tooltip
+              formatter={(v: unknown) => [`${v} ${unit}`, label]}
+              labelFormatter={(l) => `Hora: ${l}`}
+            />
+            <Line
+              type="monotone"
+              dataKey={dataKey}
+              stroke={color}
+              dot={false}
+              strokeWidth={2}
+              connectNulls={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </CardContent>
+    </Card>
+  )
+}
+
+function EmitterDetail({ device, liveReadings }: {
   device: Device
   liveReadings: TelemetryReading[]
-  history: TelemetryReading[]
 }) {
-  const allReadings = [...liveReadings, ...history]
+  const [selectedHours, setSelectedHours] = useState(24)
+
+  const { data: history = [], isFetching } = useQuery({
+    queryKey: ['telemetry', device.id, selectedHours],
+    queryFn: () => getTelemetryHistory(device.id, selectedHours),
+    refetchInterval: 60_000,
+  })
+
+  const allReadings = [...(history as TelemetryReading[]), ...liveReadings]
     .filter((r, i, arr) => arr.findIndex((x) => x.id === r.id) === i)
     .sort((a, b) => new Date(a.received_at).getTime() - new Date(b.received_at).getTime())
-    .slice(-50)
 
   const chartData = allReadings.map((r) => ({
-    time: format(new Date(r.received_at), 'HH:mm', { locale: es }),
-    'Temp. Amb. (°C)': getNestedValue(r.payload, 'amb.temp_c'),
-    'Humedad (%)': getNestedValue(r.payload, 'amb.hum_pct'),
-    'Temp. Sonda (°C)': getNestedValue(r.payload, 'probe.temp_c'),
-    'Batería (%)': getNestedValue(r.payload, 'bat.pct'),
-    'RSSI (dBm)': r.rssi,
+    time: timeFormat(r.received_at, selectedHours),
+    tempAmb:   getNestedValue(r.payload, 'amb.temp_c'),
+    humAmb:    getNestedValue(r.payload, 'amb.hum_pct'),
+    tempSonda: getNestedValue(r.payload, 'probe.temp_c'),
+    batPct:    getNestedValue(r.payload, 'bat.pct'),
+    batV:      getNestedValue(r.payload, 'bat.v'),
+    rssi:      r.rssi,
   }))
 
   const latest = allReadings[allReadings.length - 1]
-  const p = latest?.payload ?? {}
+  const p = latest?.payload ?? {} as Record<string, unknown>
   const cfg = device.config as Record<string, unknown>
 
   return (
@@ -377,41 +446,52 @@ function EmitterDetail({ device, liveReadings, history }: {
         <KpiCard title="Batería" value={getNestedValue(p, 'bat.pct')} unit="%" available={!!(p as Record<string,unknown>)?.bat} />
       </div>
 
-      {/* RSSI + Chart */}
-      <Card>
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-sm font-semibold">Historial (últimas 50 lecturas)</CardTitle>
-            {latest?.rssi != null && (
-              <div className="flex items-center gap-1.5">
-                <RssiBars rssi={latest.rssi} />
-                <span className={`text-xs font-medium ${rssiQuality(latest.rssi).color}`}>
-                  {latest.rssi} dBm · {rssiQuality(latest.rssi).label}
-                </span>
-              </div>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent>
-          {chartData.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-10">Sin datos aún.</p>
-          ) : (
-            <ResponsiveContainer width="100%" height={260}>
-              <LineChart data={chartData} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                <XAxis dataKey="time" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
-                <YAxis tick={{ fontSize: 10 }} />
-                <Tooltip />
-                <Legend />
-                <Line type="monotone" dataKey="Temp. Amb. (°C)" stroke="#f97316" dot={false} strokeWidth={2} />
-                <Line type="monotone" dataKey="Humedad (%)" stroke="#3b82f6" dot={false} strokeWidth={2} />
-                <Line type="monotone" dataKey="Temp. Sonda (°C)" stroke="#ef4444" dot={false} strokeWidth={2} />
-                <Line type="monotone" dataKey="Batería (%)" stroke="#22c55e" dot={false} strokeWidth={2} />
-              </LineChart>
-            </ResponsiveContainer>
+      {/* Range selector + stats */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-1 bg-gray-100 rounded-xl p-1">
+          {RANGE_OPTIONS.map((opt) => (
+            <button
+              key={opt.hours}
+              onClick={() => setSelectedHours(opt.hours)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                selectedHours === opt.hours
+                  ? 'bg-white shadow text-gray-900'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          {isFetching && <span className="animate-pulse">Cargando…</span>}
+          <span>{allReadings.length} lecturas</span>
+          {latest?.rssi != null && (
+            <span className={`flex items-center gap-1 ${rssiQuality(latest.rssi).color}`}>
+              <RssiBars rssi={latest.rssi} />
+              {latest.rssi} dBm
+            </span>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
+
+      {/* Individual charts */}
+      {chartData.length === 0 ? (
+        <Card>
+          <CardContent className="py-16 text-center text-muted-foreground text-sm">
+            Sin datos para este período
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid md:grid-cols-2 gap-4">
+          <SensorChart data={chartData} dataKey="tempAmb"   color="#f97316" unit="°C"  label="Temperatura Ambiente" />
+          <SensorChart data={chartData} dataKey="humAmb"    color="#3b82f6" unit="%"   label="Humedad Relativa" />
+          <SensorChart data={chartData} dataKey="tempSonda" color="#ef4444" unit="°C"  label="Temperatura Sonda (DS18B20)" />
+          <SensorChart data={chartData} dataKey="batPct"    color="#22c55e" unit="%"   label="Batería (%)" />
+          <SensorChart data={chartData} dataKey="batV"      color="#a3e635" unit="V"   label="Voltaje Batería" />
+          <SensorChart data={chartData} dataKey="rssi"      color="#8b5cf6" unit="dBm" label="RSSI señal LoRa" />
+        </div>
+      )}
 
       {/* Device info */}
       <Card>
@@ -504,12 +584,6 @@ export default function DeviceDetailPage() {
     refetchInterval: 10_000,
   })
 
-  const { data: history = [] } = useQuery({
-    queryKey: ['telemetry', id],
-    queryFn: () => getTelemetryHistory(Number(id), 50),
-    enabled: !!id && device?.device_type === 'emisor',
-  })
-
   useEffect(() => {
     if (!device?.device_id || device.device_type !== 'emisor') return
     const apiBase = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
@@ -559,7 +633,7 @@ export default function DeviceDetailPage() {
       {device.device_type === 'receptor' ? (
         <ReceptorDetail device={device} />
       ) : (
-        <EmitterDetail device={device} liveReadings={liveReadings} history={history} />
+        <EmitterDetail device={device} liveReadings={liveReadings} />
       )}
     </div>
   )

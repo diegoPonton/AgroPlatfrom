@@ -63,8 +63,8 @@ export async function deleteDevice(id: number) {
   await api.delete(`/api/devices/${id}/`)
 }
 
-export async function getTelemetryHistory(deviceId: number, limit = 100) {
-  const { data } = await api.get(`/api/devices/${deviceId}/telemetry/?limit=${limit}`)
+export async function getTelemetryHistory(deviceId: number, hours = 24, limit = 500) {
+  const { data } = await api.get(`/api/devices/${deviceId}/telemetry/?hours=${hours}&limit=${limit}`)
   return data
 }
 
