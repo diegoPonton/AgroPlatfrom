@@ -23,9 +23,10 @@ COPY firmware/ /firmware/
 RUN cd /firmware && pio run -e emisor  || true
 RUN cd /firmware && pio run -e receptor || true
 
-# --- Verificar esptool disponible ---
+# --- Verificar esptool disponible (bundled con PlatformIO) ---
 RUN find /root/.platformio/packages -name "esptool.py" 2>/dev/null | head -3 \
-    && python3 -c "import esptool; print('esptool OK:', esptool.__version__)"
+    && test -f $(find /root/.platformio/packages -name "esptool.py" 2>/dev/null | head -1) \
+    && echo "esptool.py OK"
 
 # --- App Django ---
 COPY . .
