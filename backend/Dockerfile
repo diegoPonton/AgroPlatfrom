@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y \
     libpq-dev gcc git curl \
     && rm -rf /var/lib/apt/lists/*
 
-# --- Python deps ---
+# --- Python deps (incluye esptool para merge_bin) ---
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -18,11 +18,14 @@ RUN pip install --no-cache-dir platformio
 COPY firmware/ /firmware/
 
 # --- Pre-cachear todas las dependencias de PlatformIO ---
-# Compila ambos targets una vez durante el build del imagen para que
-# ~/.platformio/packages quede cacheado. Las compilaciones en runtime
-# solo necesitan recompilar el código fuente (~30s), sin descargar nada.
+# Compila ambos targets una vez para que ~/.platformio/packages quede cacheado.
+# Las compilaciones en runtime solo recompilan el código fuente (~30s).
 RUN cd /firmware && pio run -e emisor  || true
 RUN cd /firmware && pio run -e receptor || true
+
+# --- Verificar esptool disponible ---
+RUN find /root/.platformio/packages -name "esptool.py" 2>/dev/null | head -3 \
+    && python3 -c "import esptool; print('esptool OK:', esptool.__version__)"
 
 # --- App Django ---
 COPY . .
