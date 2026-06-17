@@ -20,7 +20,9 @@ interface GpsCoords {
   alt?: number | null
   sats?: number | null
   hdop?: number | null
-  source?: 'sensor' | 'manual'
+  source?: 'sensor' | 'manual' | 'ip'
+  city?: string | null
+  country?: string | null
 }
 
 interface GpsNode {
@@ -462,14 +464,21 @@ function NodePanel({
           {node.gps ? (
             <div className="bg-emerald-50 rounded-xl p-3 space-y-1.5">
               <div className="flex items-center justify-between">
-                <p className="text-xs font-medium text-emerald-700">📍 Coordenadas GPS</p>
-                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${node.gps.source === 'sensor' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                  {node.gps.source === 'sensor' ? 'Sensor' : 'Manual'}
+                <p className="text-xs font-medium text-emerald-700">📍 Coordenadas</p>
+                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                  node.gps.source === 'sensor' ? 'bg-emerald-100 text-emerald-700' :
+                  node.gps.source === 'ip'     ? 'bg-blue-100 text-blue-700' :
+                                                 'bg-amber-100 text-amber-700'
+                }`}>
+                  {node.gps.source === 'sensor' ? 'GPS Sensor' : node.gps.source === 'ip' ? '~WiFi/IP' : 'Manual'}
                 </span>
               </div>
               <p className="text-xs font-mono text-emerald-800">
                 {node.gps.lat.toFixed(6)}, {node.gps.lng.toFixed(6)}
               </p>
+              {node.gps.source === 'ip' && node.gps.city && (
+                <p className="text-xs text-blue-600">📡 {node.gps.city}{node.gps.country ? `, ${node.gps.country}` : ''} — aprox. por IP</p>
+              )}
               {node.gps.alt !== null && node.gps.alt !== undefined && (
                 <p className="text-xs text-emerald-600">Alt: {node.gps.alt.toFixed(1)} m</p>
               )}
@@ -718,6 +727,9 @@ export default function GpsMap() {
                     )}
                     {node.gps?.source === 'manual' && (
                       <p className="text-xs text-amber-600">📌 Posición manual</p>
+                    )}
+                    {node.gps?.source === 'ip' && (
+                      <p className="text-xs text-blue-500">~WiFi/IP{node.gps.city ? ` · ${node.gps.city}` : ''}</p>
                     )}
                   </div>
                 </Tooltip>

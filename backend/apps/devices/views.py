@@ -310,7 +310,13 @@ def gps_map(request):
                 lat, lng = loc.get('lat'), loc.get('lng')
                 if lat is not None and lng is not None:
                     try:
-                        return {'lat': float(lat), 'lng': float(lng), 'source': 'manual'}
+                        return {
+                            'lat': float(lat),
+                            'lng': float(lng),
+                            'source': loc.get('source', 'manual'),
+                            'city': loc.get('city'),
+                            'country': loc.get('country'),
+                        }
                     except (TypeError, ValueError):
                         pass
         return None

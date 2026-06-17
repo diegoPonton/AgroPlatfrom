@@ -1,4 +1,9 @@
+import ipaddress
+import json
 import operator as _op
+import threading
+from urllib.request import urlopen
+
 from django.utils import timezone
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -11,6 +16,48 @@ from apps.devices.models import Device
 from apps.users.models import Organization
 from .models import TelemetryReading
 from .serializers import TelemetryReadingSerializer
+
+
+def _get_client_ip(request) -> str:
+    forwarded = request.META.get('HTTP_X_FORWARDED_FOR', '')
+    if forwarded:
+        return forwarded.split(',')[0].strip()
+    return request.META.get('REMOTE_ADDR', '')
+
+
+def _is_private_ip(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+        return addr.is_private or addr.is_loopback or addr.is_link_local
+    except ValueError:
+        return True
+
+
+def _geolocate_receptor(receptor_pk: int, ip: str):
+    """Background thread: locate receptor by public IP and store in config.location."""
+    if _is_private_ip(ip):
+        return
+    try:
+        with urlopen(f'http://ip-api.com/json/{ip}?fields=status,lat,lon,city,country', timeout=5) as r:
+            data = json.loads(r.read())
+        if data.get('status') != 'success':
+            return
+        receptor = Device.objects.get(pk=receptor_pk)
+        cfg = dict(receptor.config or {})
+        existing = cfg.get('location')
+        # Don't overwrite a location the user set manually on the map
+        if isinstance(existing, dict) and existing.get('source') == 'manual':
+            return
+        cfg['location'] = {
+            'lat': data['lat'],
+            'lng': data['lon'],
+            'source': 'ip',
+            'city': data.get('city', ''),
+            'country': data.get('country', ''),
+        }
+        Device.objects.filter(pk=receptor_pk).update(config=cfg)
+    except Exception:
+        pass
 
 
 @api_view(['POST'])
@@ -53,6 +100,12 @@ def ingest(request):
 
     Device.objects.filter(pk=device.pk).update(last_seen=now)
     Device.objects.filter(pk=receptor.pk).update(last_seen=now)
+
+    # Auto-geolocate receptor by IP if no manual location is set
+    existing_loc = (receptor.config or {}).get('location')
+    if not isinstance(existing_loc, dict) or existing_loc.get('source') != 'manual':
+        ip = _get_client_ip(request)
+        threading.Thread(target=_geolocate_receptor, args=(receptor.pk, ip), daemon=True).start()
 
     channel_layer = get_channel_layer()
     group_name = f'device_{device_id}'.replace(':', '_').replace('.', '_')
