@@ -9,22 +9,35 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.CreateModel(
-            name='Sensor',
-            fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('sensor_type', models.CharField(choices=[
-                    ('SHTC3', 'SHTC3 — Temperatura/Humedad Ambiente'),
-                    ('DS18B20', 'DS18B20 — Temperatura Sonda'),
-                    ('GPS', 'GPS — Posición'),
-                    ('BAT', 'Batería — Voltaje/Porcentaje'),
-                ], max_length=20)),
-                ('label', models.CharField(blank=True, max_length=100)),
-                ('device', models.ForeignKey(
-                    on_delete=django.db.models.deletion.CASCADE,
-                    related_name='sensors',
-                    to='devices.device',
-                )),
+        migrations.RunSQL(
+            sql="""
+                CREATE TABLE IF NOT EXISTS devices_sensor (
+                    id bigserial PRIMARY KEY,
+                    sensor_type varchar(20) NOT NULL,
+                    label varchar(100) NOT NULL DEFAULT '',
+                    device_id bigint NOT NULL REFERENCES devices_device(id) ON DELETE CASCADE
+                );
+            """,
+            reverse_sql="DROP TABLE IF EXISTS devices_sensor;",
+            state_operations=[
+                migrations.CreateModel(
+                    name='Sensor',
+                    fields=[
+                        ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
+                        ('sensor_type', models.CharField(choices=[
+                            ('SHTC3', 'SHTC3 — Temperatura/Humedad Ambiente'),
+                            ('DS18B20', 'DS18B20 — Temperatura Sonda'),
+                            ('GPS', 'GPS — Posición'),
+                            ('BAT', 'Batería — Voltaje/Porcentaje'),
+                        ], max_length=20)),
+                        ('label', models.CharField(blank=True, max_length=100)),
+                        ('device', models.ForeignKey(
+                            on_delete=django.db.models.deletion.CASCADE,
+                            related_name='sensors',
+                            to='devices.device',
+                        )),
+                    ],
+                ),
             ],
         ),
     ]
