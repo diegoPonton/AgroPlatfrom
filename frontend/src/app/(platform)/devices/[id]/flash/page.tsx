@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -343,7 +343,183 @@ export default function FlashPage() {
           )}
         </CardContent>
       </Card>
+      {/* ── Serial Monitor ── */}
+      <SerialMonitor />
     </div>
+  )
+}
+
+// ──────────────────────────────────────────────────
+// Monitor Serial integrado (Web Serial API)
+// ──────────────────────────────────────────────────
+const BAUD_RATES = [9600, 19200, 38400, 57600, 74880, 115200, 230400, 921600]
+
+function SerialMonitor() {
+  const [connected, setConnected]   = useState(false)
+  const [baud, setBaud]             = useState(115200)
+  const [lines, setLines]           = useState<{ text: string; ts: string }[]>([])
+  const [input, setInput]           = useState('')
+  const [autoscroll, setAutoscroll] = useState(true)
+  const portRef    = useRef<SerialPort | null>(null)
+  const readerRef  = useRef<ReadableStreamDefaultReader | null>(null)
+  const bottomRef  = useRef<HTMLDivElement>(null)
+  const inputRef   = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (autoscroll) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [lines, autoscroll])
+
+  const addLine = useCallback((text: string) => {
+    const ts = new Date().toLocaleTimeString('es-AR', { hour12: false })
+    setLines(prev => {
+      const next = [...prev, { text, ts }]
+      return next.length > 1000 ? next.slice(-1000) : next
+    })
+  }, [])
+
+  async function connect() {
+    if (!('serial' in navigator)) { toast.error('Web Serial no disponible. Usá Chrome o Edge.'); return }
+    try {
+      const port = await (navigator as Navigator & { serial: { requestPort(): Promise<SerialPort> } }).serial.requestPort()
+      await port.open({ baudRate: baud })
+      portRef.current = port
+      setConnected(true)
+      setLines([])
+      addLine(`── Conectado @ ${baud} baud ──`)
+      readLoop(port)
+    } catch (e) {
+      if ((e as Error).name !== 'NotSelectedError') toast.error('No se pudo abrir el puerto')
+    }
+  }
+
+  async function readLoop(port: SerialPort) {
+    const decoder = new TextDecoderStream()
+    port.readable!.pipeTo(decoder.writable as WritableStream<Uint8Array>).catch(() => {})
+    const reader = decoder.readable.getReader()
+    readerRef.current = reader
+    let buf = ''
+    try {
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buf += value
+        const parts = buf.split('\n')
+        buf = parts.pop() ?? ''
+        for (const line of parts) {
+          const trimmed = line.replace(/\r$/, '')
+          if (trimmed) addLine(trimmed)
+        }
+      }
+    } catch { /* port closed */ } finally {
+      reader.releaseLock()
+      setConnected(false)
+      addLine('── Desconectado ──')
+    }
+  }
+
+  async function disconnect() {
+    try {
+      readerRef.current?.cancel()
+      await portRef.current?.close()
+    } catch { /* ignore */ }
+    portRef.current = null
+    setConnected(false)
+  }
+
+  async function sendLine() {
+    if (!input.trim() || !portRef.current?.writable) return
+    const writer = portRef.current.writable.getWriter()
+    await writer.write(new TextEncoder().encode(input + '\n'))
+    writer.releaseLock()
+    addLine(`> ${input}`)
+    setInput('')
+    inputRef.current?.focus()
+  }
+
+  function lineColor(text: string) {
+    if (text.startsWith('──'))         return 'text-gray-500'
+    if (text.startsWith('> '))         return 'text-yellow-400'
+    if (text.includes('ERROR') || text.includes('❌')) return 'text-red-400'
+    if (text.includes('OK') || text.includes('✅'))    return 'text-green-400'
+    if (text.startsWith('[POST]'))     return 'text-blue-400'
+    if (text.startsWith('[RELAY]'))    return 'text-purple-400'
+    if (text.startsWith('[CMD]'))      return 'text-yellow-300'
+    if (text.startsWith('[GPS]'))      return 'text-cyan-400'
+    if (text.startsWith('[LORA]') || text.startsWith('[ LORA ]')) return 'text-orange-400'
+    return 'text-green-300'
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base flex items-center justify-between">
+          <span className="flex items-center gap-2">
+            Monitor Serial
+            <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500 animate-pulse' : 'bg-gray-300'}`} />
+          </span>
+          <div className="flex items-center gap-2">
+            <label className="flex items-center gap-1 text-xs font-normal text-muted-foreground">
+              <input type="checkbox" checked={autoscroll} onChange={e => setAutoscroll(e.target.checked)} className="w-3 h-3" />
+              Auto-scroll
+            </label>
+            <button onClick={() => setLines([])} className="text-xs text-muted-foreground hover:text-foreground border rounded px-2 py-0.5">
+              Limpiar
+            </button>
+          </div>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex items-center gap-2">
+          <select
+            value={baud}
+            onChange={e => setBaud(Number(e.target.value))}
+            disabled={connected}
+            className="border rounded px-2 py-1.5 text-sm disabled:opacity-50"
+          >
+            {BAUD_RATES.map(b => <option key={b} value={b}>{b} baud</option>)}
+          </select>
+          {connected ? (
+            <Button variant="outline" onClick={disconnect} className="text-red-600 border-red-300 hover:bg-red-50">
+              ⏹ Desconectar
+            </Button>
+          ) : (
+            <Button variant="outline" onClick={connect}>
+              ▶ Conectar puerto
+            </Button>
+          )}
+        </div>
+
+        {/* Terminal */}
+        <div className="bg-gray-950 rounded-lg p-3 font-mono text-xs h-72 overflow-y-auto">
+          {lines.length === 0 ? (
+            <span className="text-gray-600">Conectá el ESP32 y presioná "Conectar puerto"…</span>
+          ) : (
+            lines.map((l, i) => (
+              <div key={i} className={`flex gap-2 leading-5 ${lineColor(l.text)}`}>
+                <span className="text-gray-600 shrink-0 select-none">{l.ts}</span>
+                <span className="break-all">{l.text}</span>
+              </div>
+            ))
+          )}
+          <div ref={bottomRef} />
+        </div>
+
+        {/* Input de envío */}
+        {connected && (
+          <div className="flex gap-2">
+            <input
+              ref={inputRef}
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && sendLine()}
+              placeholder='Enviar texto al ESP32 (Enter para enviar)…'
+              className="flex-1 border rounded px-3 py-1.5 text-sm font-mono bg-gray-950 text-green-300 border-gray-700 focus:outline-none focus:border-green-600"
+            />
+            <Button variant="outline" onClick={sendLine} className="text-xs">Enviar</Button>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 
