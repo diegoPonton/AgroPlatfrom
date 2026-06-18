@@ -430,12 +430,17 @@ void setup() {
 
   if (!rf95.init())                       { Serial.println("  ERROR: init fallido"); goToDeepSleep(); }
   if (!rf95.setFrequency(LORA_FREQ_MHZ)) { Serial.println("  ERROR: frecuencia fallida"); goToDeepSleep(); }
-  rf95.setModemConfig(RH_RF95::Bw125Cr45Sf128);  // SF7 / BW125 — debe coincidir con receptor
-  rf95.spiWrite(0x39, LORA_SYNC_WORD);            // REG_SYNC_WORD — RadioHead no expone setter
+  rf95.setModemConfig(RH_RF95::Bw125Cr45Sf128);
+  rf95.spiWrite(0x39, LORA_SYNC_WORD);
   if (g_lora_sf > 0) rf95.setSpreadingFactor(g_lora_sf);
   rf95.setTxPower(g_lora_pwr, false);
+
+  // Verificación SPI: REG_VERSION (0x42) debe devolver 0x12 en SX1276
+  uint8_t ver = rf95.spiRead(0x42);
   Serial.printf("  Freq: %.0f MHz  SF: %s  BW: 125  SyncWord: 0x%02X  Power: %d dBm\n",
     LORA_FREQ_MHZ, g_lora_sf > 0 ? String(g_lora_sf).c_str() : "7", LORA_SYNC_WORD, g_lora_pwr);
+  Serial.printf("  SX1276 version reg: 0x%02X %s\n", ver,
+    ver == 0x12 ? "(OK)" : "(ERROR — revisar cableado SPI/CS)");
 
   // --- GPS ---
   if (g_en_GPS) {
