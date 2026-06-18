@@ -2,13 +2,15 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { getDevice } from '@/lib/devices'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 
 interface FirmwareBuild {
   id: number
@@ -16,6 +18,7 @@ interface FirmwareBuild {
   target: 'emisor' | 'receptor'
   notes: string
   compiled_at: string
+  status: string
   flash_offset?: number  // 0x0 = merged binary, 0x10000 = app only
 }
 
@@ -63,6 +66,8 @@ export default function FlashPage() {
     },
   })
 
+  const qc = useQueryClient()
+
   const logFlash = useMutation({
     mutationFn: (success: boolean) =>
       api.post(`/api/devices/${id}/flash/`, {
@@ -71,6 +76,53 @@ export default function FlashPage() {
         success,
       }),
   })
+
+  const [buildVersion, setBuildVersion] = useState('1.0.0')
+  const [buildId, setBuildId] = useState<number | null>(null)
+  const [buildStatus, setBuildStatus] = useState<'idle' | 'building' | 'ready' | 'error'>('idle')
+  const [buildLog, setBuildLog] = useState<string>('')
+  const buildLogRef = useRef<HTMLDivElement>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  function stopPolling() {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+  }
+
+  useEffect(() => () => stopPolling(), [])
+
+  async function startBuild() {
+    setBuildLog('')
+    setBuildStatus('building')
+    try {
+      const { data } = await api.post(`/api/devices/${id}/build/`, { version: buildVersion })
+      const bid: number = data.build_id
+      setBuildId(bid)
+
+      pollRef.current = setInterval(async () => {
+        try {
+          const { data: s } = await api.get(`/api/firmware/${bid}/status/`)
+          setBuildLog(s.build_log ?? '')
+          if (s.status !== 'building') {
+            stopPolling()
+            setBuildStatus(s.status)
+            if (s.status === 'ready') {
+              qc.invalidateQueries({ queryKey: ['firmware'] })
+              toast.success('Firmware compilado correctamente')
+            } else {
+              toast.error('La compilación falló — revisá el log')
+            }
+          }
+        } catch { stopPolling(); setBuildStatus('error') }
+      }, 2000)
+    } catch {
+      setBuildStatus('error')
+      toast.error('No se pudo iniciar la compilación')
+    }
+  }
+
+  useEffect(() => {
+    buildLogRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [buildLog])
 
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -196,9 +248,8 @@ export default function FlashPage() {
     }
   }
 
-  const compatibleFirmware = firmwareList.filter(
-    (f) => !device || f.target === device.device_type,
-  )
+  const compatibleFirmware = firmwareList.filter((f) => !device || f.target === device.device_type)
+  const otherFirmware = firmwareList.filter((f) => device && f.target !== device.device_type)
 
   const isRunning = ['connecting', 'downloading', 'flashing', 'provisioning'].includes(status)
 
@@ -224,7 +275,8 @@ export default function FlashPage() {
         <CardContent className="py-4 text-sm text-blue-800 space-y-2">
           <p className="font-semibold">Qué va a pasar:</p>
           <ol className="list-decimal list-inside space-y-1 text-blue-700">
-            <li>Seleccionás la versión de firmware a instalar</li>
+            <li>Seleccionás (o compilás) la versión de firmware a instalar</li>
+            <li>Si no tenés un .bin, compilás desde el código fuente del servidor</li>
             <li>Conectás el ESP32 por USB y elegís el puerto</li>
             <li>El sistema escribe el firmware en el chip automáticamente</li>
             <li>El ESP32 arranca y <strong>recibe su configuración automáticamente</strong> por serial</li>
@@ -290,36 +342,84 @@ export default function FlashPage() {
       <Card>
         <CardHeader><CardTitle className="text-base">1 — Seleccioná la versión</CardTitle></CardHeader>
         <CardContent className="space-y-2">
-          {compatibleFirmware.length === 0 ? (
+          {compatibleFirmware.length === 0 && otherFirmware.length === 0 ? (
             <div className="text-sm text-muted-foreground space-y-2">
               <p>No hay builds disponibles para <strong>{device?.device_type ?? 'este tipo'}</strong>.</p>
-              <button onClick={() => router.push('/firmware')}
-                className="text-green-600 underline text-sm">
-                Subir un firmware →
-              </button>
+              <p className="text-xs">Compilá uno en el paso 2 de abajo.</p>
             </div>
           ) : (
-            compatibleFirmware.map((fw) => (
-              <button key={fw.id} type="button" onClick={() => setSelectedFirmware(fw)}
-                className={`w-full text-left px-4 py-3 rounded-lg border transition-colors ${
-                  selectedFirmware?.id === fw.id
-                    ? 'border-green-500 bg-green-50'
-                    : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
-                }`}>
-                <div className="flex items-center justify-between">
-                  <span className="font-medium text-sm">v{fw.version}</span>
-                  <Badge variant="outline" className="text-xs">{fw.target}</Badge>
-                </div>
-                {fw.notes && <p className="text-xs text-muted-foreground mt-0.5">{fw.notes}</p>}
-              </button>
-            ))
+            <div className="space-y-2">
+              {compatibleFirmware.map((fw) => (
+                <FirmwareRow key={fw.id} fw={fw} selected={selectedFirmware?.id === fw.id} onSelect={setSelectedFirmware} />
+              ))}
+              {compatibleFirmware.length === 0 && otherFirmware.length > 0 && (
+                <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  No hay builds de <strong>{device?.device_type}</strong>. Compilá uno en el paso 2, o usá uno de otro tipo bajo tu responsabilidad.
+                </p>
+              )}
+              {otherFirmware.length > 0 && (
+                <details className="mt-2">
+                  <summary className="text-xs text-muted-foreground cursor-pointer select-none hover:text-foreground">
+                    Builds de otro tipo ({otherFirmware.length}) — no recomendado
+                  </summary>
+                  <div className="space-y-1 mt-2">
+                    {otherFirmware.map((fw) => (
+                      <FirmwareRow key={fw.id} fw={fw} selected={selectedFirmware?.id === fw.id} onSelect={setSelectedFirmware} warn />
+                    ))}
+                  </div>
+                </details>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Compilar desde fuente */}
+      <Card>
+        <CardHeader><CardTitle className="text-base">2 — Compilar firmware (opcional)</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            Si no tenés un <code className="bg-gray-100 px-0.5 rounded">.bin</code> disponible, compilá el firmware directamente desde el código fuente del servidor.
+          </p>
+          <div className="flex items-end gap-3">
+            <div className="space-y-1">
+              <Label htmlFor="build-version" className="text-xs">Versión</Label>
+              <Input
+                id="build-version"
+                value={buildVersion}
+                onChange={e => setBuildVersion(e.target.value)}
+                className="w-28 h-8 text-sm"
+                disabled={buildStatus === 'building'}
+              />
+            </div>
+            <Button
+              variant="outline"
+              onClick={startBuild}
+              disabled={buildStatus === 'building'}
+              className="h-8 text-sm"
+            >
+              {buildStatus === 'building' ? 'Compilando…' : '⚙ Compilar'}
+            </Button>
+            {buildStatus === 'ready' && buildId && (
+              <span className="text-xs text-green-600 font-medium">✅ Listo — aparece en la lista de arriba</span>
+            )}
+            {buildStatus === 'error' && (
+              <span className="text-xs text-red-600 font-medium">❌ Error de compilación</span>
+            )}
+          </div>
+
+          {buildLog && (
+            <div className="bg-gray-900 rounded-lg p-3 font-mono text-xs text-green-400 max-h-48 overflow-y-auto whitespace-pre-wrap">
+              {buildLog}
+              <div ref={buildLogRef} />
+            </div>
           )}
         </CardContent>
       </Card>
 
       {/* Flash */}
       <Card>
-        <CardHeader><CardTitle className="text-base">2 — Conectar y flashear</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="text-base">3 — Conectar y flashear</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           <div className={`rounded-lg px-4 py-2.5 text-sm font-medium ${STATUS_COLOR[status]}`}>
             {STATUS_LABEL[status]}
@@ -527,6 +627,41 @@ function SerialMonitor() {
 // ──────────────────────────────────────────────────
 // Descarga secrets.h para uso con PlatformIO
 // ──────────────────────────────────────────────────
+function FirmwareRow({
+  fw,
+  selected,
+  onSelect,
+  warn = false,
+}: {
+  fw: FirmwareBuild
+  selected: boolean
+  onSelect: (fw: FirmwareBuild) => void
+  warn?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(fw)}
+      className={`w-full text-left px-4 py-3 rounded-lg border transition-colors ${
+        selected
+          ? 'border-green-500 bg-green-50'
+          : warn
+          ? 'border-amber-200 hover:border-amber-400 hover:bg-amber-50'
+          : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-medium text-sm">v{fw.version}</span>
+        <div className="flex items-center gap-1.5">
+          {warn && <Badge variant="outline" className="text-xs text-amber-600 border-amber-300">⚠ tipo incorrecto</Badge>}
+          <Badge variant="outline" className="text-xs">{fw.target}</Badge>
+        </div>
+      </div>
+      {fw.notes && <p className="text-xs text-muted-foreground mt-0.5">{fw.notes}</p>}
+    </button>
+  )
+}
+
 function DownloadSecretsButton({ deviceId }: { deviceId: number }) {
   async function download() {
     const res = await api.get(`/api/devices/${deviceId}/secrets/`, { responseType: 'blob' })
