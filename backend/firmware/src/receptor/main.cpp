@@ -273,18 +273,32 @@ void setup() {
     delay(5000); ESP.restart();
   }
 
+  rf95.setModemConfig(RH_RF95::Bw125Cr45Sf128);   // SF7 / BW125 — debe coincidir con emisor
+  rf95.setSyncWord(LORA_SYNC_WORD);
   rf95.setTxPower(LORA_TX_DBM, false);
-  Serial.printf("[LoRa] Escuchando @ %.0f MHz\n", LORA_FREQ_MHZ);
+  Serial.printf("[LoRa] Escuchando @ %.0f MHz  SF7  BW125  SyncWord=0x%02X\n",
+    LORA_FREQ_MHZ, LORA_SYNC_WORD);
 }
 
 // =====================
 // Loop
 // =====================
 void loop() {
-  static unsigned long lastWiFiTry = 0;
+  static unsigned long lastWiFiTry  = 0;
+  static unsigned long lastHeartbeat = 0;
+
+  // Reconexión WiFi periódica
   if (WiFi.status() != WL_CONNECTED && millis() - lastWiFiTry > WIFI_RETRY_MS) {
     lastWiFiTry = millis();
     connectWiFi();
+  }
+
+  // Heartbeat cada 10s para saber que el receptor sigue vivo
+  if (millis() - lastHeartbeat > 10000) {
+    lastHeartbeat = millis();
+    Serial.printf("[LISTEN] Esperando paquetes LoRa... WiFi:%s  uptime:%lus\n",
+      WiFi.status() == WL_CONNECTED ? "OK" : "OFF",
+      millis() / 1000);
   }
 
   if (!rf95.available()) return;
@@ -293,29 +307,28 @@ void loop() {
   uint8_t len = sizeof(buf);
   if (!rf95.recv(buf, &len)) return;
 
-  String payload((char*)buf, len);
   int rssi = rf95.lastRssi();
+
+  // Un solo parse — DynamicJsonDocument alcanza para cualquier payload válido (<251 bytes)
+  DynamicJsonDocument doc(1024);
+  String payload((char*)buf, len);
   Serial.printf("\n[RX] %d bytes | RSSI %d dBm\n", len, rssi);
   Serial.println(payload);
 
-  StaticJsonDocument<128> idDoc;
-  deserializeJson(idDoc, payload);
-  String emitterDeviceId = idDoc["device_id"] | "";
-
-  DynamicJsonDocument doc(768);
   if (deserializeJson(doc, payload)) {
     Serial.println("[RX] JSON invalido — descartado");
     return;
   }
+
+  String emitterDeviceId = doc["device_id"] | "";
   doc["rssi"] = rssi;
+
   String payloadWithRssi;
   serializeJson(doc, payloadWithRssi);
 
   bool ok = postToAPI(payloadWithRssi);
   Serial.println(ok ? "[POST] OK" : "[POST] FALLO — dato perdido");
 
-  // Relay de comandos: el emisor tiene CMD_WINDOW_MS de ventana de escucha.
-  // El POST con reintentos puede tardar hasta ~6s. Hay margen con 7s de ventana.
   if (ok && emitterDeviceId.length() > 0) {
     checkAndRelayCommands(emitterDeviceId);
   }

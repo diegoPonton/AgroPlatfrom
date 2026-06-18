@@ -428,12 +428,14 @@ void setup() {
   SPI.begin(LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, LORA_CS_PIN);
   loraHardReset();
 
-  if (!rf95.init())                    { Serial.println("  ERROR: init fallido"); goToDeepSleep(); }
+  if (!rf95.init())                       { Serial.println("  ERROR: init fallido"); goToDeepSleep(); }
   if (!rf95.setFrequency(LORA_FREQ_MHZ)) { Serial.println("  ERROR: frecuencia fallida"); goToDeepSleep(); }
+  rf95.setModemConfig(RH_RF95::Bw125Cr45Sf128);  // SF7 / BW125 — debe coincidir con receptor
+  rf95.setSyncWord(LORA_SYNC_WORD);
   if (g_lora_sf > 0) rf95.setSpreadingFactor(g_lora_sf);
   rf95.setTxPower(g_lora_pwr, false);
-  Serial.printf("  Freq: %.0f MHz  SF: %s  Power: %d dBm\n",
-    LORA_FREQ_MHZ, g_lora_sf > 0 ? String(g_lora_sf).c_str() : "7(default)", g_lora_pwr);
+  Serial.printf("  Freq: %.0f MHz  SF: %s  BW: 125  SyncWord: 0x%02X  Power: %d dBm\n",
+    LORA_FREQ_MHZ, g_lora_sf > 0 ? String(g_lora_sf).c_str() : "7", LORA_SYNC_WORD, g_lora_pwr);
 
   // --- GPS ---
   if (g_en_GPS) {
