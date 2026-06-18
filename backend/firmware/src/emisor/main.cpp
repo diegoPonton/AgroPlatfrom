@@ -531,7 +531,16 @@ void loop() {
 
   bool sent = false;
   if (payload.length() <= MAX_LORA) {
-    // Limpiar flags IRQ residuales antes de enviar
+    // El SX1276 DEBE estar en STANDBY antes de TX.
+    // Después del GPS loop (60s) puede haber vuelto a SLEEP internamente.
+    // Forzamos STANDBY explícitamente sin pasar por el state machine de RadioHead.
+    rf95.spiWrite(0x01, 0x81);   // REG_OP_MODE = LoRa + STANDBY
+    delay(15);
+    uint8_t preMode = rf95.spiRead(0x01);
+    Serial.printf("  Pre-TX OP_MODE: 0x%02X %s\n", preMode,
+      preMode == 0x81 ? "(STANDBY OK)" : "(ADVERTENCIA — no está en STANDBY)");
+
+    // Limpiar flags IRQ residuales
     rf95.spiWrite(0x12, 0xFF);
 
     bool sendOk = rf95.send((const uint8_t*)payload.c_str(), payload.length());
