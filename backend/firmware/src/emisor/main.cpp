@@ -485,6 +485,22 @@ void setup() {
       Serial.println("  SIN DATOS GPS");
     }
   }
+
+  // Re-inicializar LoRa después del GPS loop.
+  // El SX1276 puede caer en SLEEP durante una espera larga. Re-init garantiza
+  // que el radio esté en STANDBY con la config correcta antes de TX.
+  Serial.println();
+  Serial.println("[ LORA RE-INIT ]");
+  loraHardReset();
+  if (!rf95.init())                       { Serial.println("  ERROR: init fallido"); goToDeepSleep(); }
+  if (!rf95.setFrequency(LORA_FREQ_MHZ)) { Serial.println("  ERROR: frecuencia fallida"); goToDeepSleep(); }
+  rf95.setModemConfig(RH_RF95::Bw125Cr45Sf128);
+  rf95.spiWrite(0x39, LORA_SYNC_WORD);
+  if (g_lora_sf > 0) rf95.setSpreadingFactor(g_lora_sf);
+  rf95.setTxPower(g_lora_pwr, false);
+  uint8_t modeAfterInit = rf95.spiRead(0x01);
+  Serial.printf("  OP_MODE post-init: 0x%02X %s\n", modeAfterInit,
+    modeAfterInit == 0x81 ? "(STANDBY OK)" : "(ERROR)");
 }
 
 // =====================
@@ -531,52 +547,29 @@ void loop() {
 
   bool sent = false;
   if (payload.length() <= MAX_LORA) {
-    // El SX1276 DEBE estar en STANDBY antes de TX.
-    // Después del GPS loop (60s) puede haber vuelto a SLEEP internamente.
-    // Forzamos STANDBY explícitamente sin pasar por el state machine de RadioHead.
-    rf95.spiWrite(0x01, 0x81);   // REG_OP_MODE = LoRa + STANDBY
-    delay(15);
-    uint8_t preMode = rf95.spiRead(0x01);
-    Serial.printf("  Pre-TX OP_MODE: 0x%02X %s\n", preMode,
-      preMode == 0x81 ? "(STANDBY OK)" : "(ADVERTENCIA — no está en STANDBY)");
+    rf95.spiWrite(0x12, 0xFF);  // limpiar IRQ flags residuales
+    rf95.send((const uint8_t*)payload.c_str(), payload.length());
 
-    // Limpiar flags IRQ residuales
-    rf95.spiWrite(0x12, 0xFF);
-
-    bool sendOk = rf95.send((const uint8_t*)payload.c_str(), payload.length());
-    Serial.printf("  rf95.send() -> %s\n", sendOk ? "true" : "false");
-
-    // Leer REG_OP_MODE (0x01) para confirmar que el radio entró en TX
-    uint8_t opMode = rf95.spiRead(0x01);
-    Serial.printf("  REG_OP_MODE: 0x%02X (%s)\n", opMode,
-      opMode == 0x83 ? "LoRa TX OK" :
-      opMode == 0x81 ? "LoRa STANDBY" :
-      opMode == 0x85 ? "LoRa RX_CONT" : "otro");
-
-    // Polling REG_IRQ_FLAGS con timeout 3s
+    // Polling REG_IRQ_FLAGS con timeout 3s (evita colgar si DIO0 no interrumpe)
     unsigned long txStart = millis();
     bool txDone = false;
     while (millis() - txStart < 3000) {
-      uint8_t irq = rf95.spiRead(0x12);
-      if (irq & 0x08) {           // TxDone bit 3
-        rf95.spiWrite(0x12, 0xFF); // limpiar todos los flags
+      if (rf95.spiRead(0x12) & 0x08) {  // TxDone bit
+        rf95.spiWrite(0x12, 0xFF);
         txDone = true;
         break;
       }
       delay(5);
     }
-    // Log del IRQ final para diagnóstico
-    uint8_t irqFinal = rf95.spiRead(0x12);
-    Serial.printf("  REG_IRQ_FLAGS final: 0x%02X\n", irqFinal);
 
     if (txDone) {
       Serial.printf("  Enviado  : OK  (%lu ms)\n", millis() - txStart);
       rf95.setModeRx();
       sent = true;
     } else {
-      Serial.println("  Enviado  : TX timeout");
-      Serial.println("  >> Si REG_OP_MODE != 0x83: radio no entró en TX");
-      Serial.println("  >> Si REG_OP_MODE == 0x83 e IRQ sin TxDone: problema de potencia/antena");
+      uint8_t finalMode = rf95.spiRead(0x01);
+      uint8_t finalIrq  = rf95.spiRead(0x12);
+      Serial.printf("  Enviado  : TX timeout  OP_MODE=0x%02X  IRQ=0x%02X\n", finalMode, finalIrq);
     }
   } else {
     Serial.println("  ERROR    : payload demasiado grande");
