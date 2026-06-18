@@ -431,7 +431,7 @@ void setup() {
   if (!rf95.init())                       { Serial.println("  ERROR: init fallido"); goToDeepSleep(); }
   if (!rf95.setFrequency(LORA_FREQ_MHZ)) { Serial.println("  ERROR: frecuencia fallida"); goToDeepSleep(); }
   rf95.setModemConfig(RH_RF95::Bw125Cr45Sf128);  // SF7 / BW125 — debe coincidir con receptor
-  rf95.setSyncWord(LORA_SYNC_WORD);
+  rf95.spiWrite(0x39, LORA_SYNC_WORD);            // REG_SYNC_WORD — RadioHead no expone setter
   if (g_lora_sf > 0) rf95.setSpreadingFactor(g_lora_sf);
   rf95.setTxPower(g_lora_pwr, false);
   Serial.printf("  Freq: %.0f MHz  SF: %s  BW: 125  SyncWord: 0x%02X  Power: %d dBm\n",

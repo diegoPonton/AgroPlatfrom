@@ -274,7 +274,7 @@ void setup() {
   }
 
   rf95.setModemConfig(RH_RF95::Bw125Cr45Sf128);   // SF7 / BW125 — debe coincidir con emisor
-  rf95.setSyncWord(LORA_SYNC_WORD);
+  rf95.spiWrite(0x39, LORA_SYNC_WORD);             // REG_SYNC_WORD — RadioHead no expone setter
   rf95.setTxPower(LORA_TX_DBM, false);
   Serial.printf("[LoRa] Escuchando @ %.0f MHz  SF7  BW125  SyncWord=0x%02X\n",
     LORA_FREQ_MHZ, LORA_SYNC_WORD);
