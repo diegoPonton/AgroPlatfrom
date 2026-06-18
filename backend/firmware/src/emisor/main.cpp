@@ -527,9 +527,28 @@ void loop() {
   bool sent = false;
   if (payload.length() <= MAX_LORA) {
     rf95.send((const uint8_t*)payload.c_str(), payload.length());
-    rf95.waitPacketSent();
-    delay(50);
-    Serial.println("  Enviado  : OK");
+
+    // waitPacketSent() no tiene timeout — si DIO0 no interrumpe se cuelga.
+    // Usamos polling directo del registro IRQ con timeout de 3s.
+    unsigned long txStart = millis();
+    bool txDone = false;
+    while (millis() - txStart < 3000) {
+      uint8_t irq = rf95.spiRead(0x12);  // REG_IRQ_FLAGS
+      if (irq & 0x08) {                  // TxDone bit
+        rf95.spiWrite(0x12, 0x08);       // limpiar flag
+        txDone = true;
+        break;
+      }
+      delay(5);
+    }
+
+    if (txDone) {
+      Serial.printf("  Enviado  : OK  (%lu ms)\n", millis() - txStart);
+    } else {
+      Serial.println("  Enviado  : TX timeout — DIO0 no respondió (check hardware)");
+    }
+    // Volver a modo RX para escuchar comandos
+    rf95.setModeRx();
     sent = true;
   } else {
     Serial.println("  ERROR    : payload demasiado grande");
@@ -545,17 +564,23 @@ void loop() {
     Serial.println("[ COMANDOS ]");
     Serial.println("  Esperando comandos del receptor...");
 
-    if (rf95.waitAvailableTimeout(CMD_WINDOW_MS)) {
-      uint8_t cmdBuf[RH_RF95_MAX_MESSAGE_LEN];
-      uint8_t cmdLen = sizeof(cmdBuf);
-      if (rf95.recv(cmdBuf, &cmdLen)) {
-        String rawCmd((char*)cmdBuf, cmdLen);
-        Serial.printf("  Recibido : %s\n", rawCmd.c_str());
-        processCommand(rawCmd);
+    unsigned long cmdDeadline = millis() + CMD_WINDOW_MS;
+    bool cmdReceived = false;
+    while (millis() < cmdDeadline) {
+      if (rf95.available()) {
+        uint8_t cmdBuf[RH_RF95_MAX_MESSAGE_LEN];
+        uint8_t cmdLen = sizeof(cmdBuf);
+        if (rf95.recv(cmdBuf, &cmdLen)) {
+          String rawCmd((char*)cmdBuf, cmdLen);
+          Serial.printf("  Recibido : %s\n", rawCmd.c_str());
+          processCommand(rawCmd);
+          cmdReceived = true;
+        }
+        break;
       }
-    } else {
-      Serial.println("  Sin comandos.");
+      delay(20);
     }
+    if (!cmdReceived) Serial.println("  Sin comandos.");
   }
 
   goToDeepSleep();
