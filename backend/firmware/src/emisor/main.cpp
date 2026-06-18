@@ -531,30 +531,44 @@ void loop() {
 
   bool sent = false;
   if (payload.length() <= MAX_LORA) {
-    rf95.send((const uint8_t*)payload.c_str(), payload.length());
+    // Limpiar flags IRQ residuales antes de enviar
+    rf95.spiWrite(0x12, 0xFF);
 
-    // waitPacketSent() no tiene timeout — si DIO0 no interrumpe se cuelga.
-    // Usamos polling directo del registro IRQ con timeout de 3s.
+    bool sendOk = rf95.send((const uint8_t*)payload.c_str(), payload.length());
+    Serial.printf("  rf95.send() -> %s\n", sendOk ? "true" : "false");
+
+    // Leer REG_OP_MODE (0x01) para confirmar que el radio entró en TX
+    uint8_t opMode = rf95.spiRead(0x01);
+    Serial.printf("  REG_OP_MODE: 0x%02X (%s)\n", opMode,
+      opMode == 0x83 ? "LoRa TX OK" :
+      opMode == 0x81 ? "LoRa STANDBY" :
+      opMode == 0x85 ? "LoRa RX_CONT" : "otro");
+
+    // Polling REG_IRQ_FLAGS con timeout 3s
     unsigned long txStart = millis();
     bool txDone = false;
     while (millis() - txStart < 3000) {
-      uint8_t irq = rf95.spiRead(0x12);  // REG_IRQ_FLAGS
-      if (irq & 0x08) {                  // TxDone bit
-        rf95.spiWrite(0x12, 0x08);       // limpiar flag
+      uint8_t irq = rf95.spiRead(0x12);
+      if (irq & 0x08) {           // TxDone bit 3
+        rf95.spiWrite(0x12, 0xFF); // limpiar todos los flags
         txDone = true;
         break;
       }
       delay(5);
     }
+    // Log del IRQ final para diagnóstico
+    uint8_t irqFinal = rf95.spiRead(0x12);
+    Serial.printf("  REG_IRQ_FLAGS final: 0x%02X\n", irqFinal);
 
     if (txDone) {
       Serial.printf("  Enviado  : OK  (%lu ms)\n", millis() - txStart);
+      rf95.setModeRx();
+      sent = true;
     } else {
-      Serial.println("  Enviado  : TX timeout — DIO0 no respondió (check hardware)");
+      Serial.println("  Enviado  : TX timeout");
+      Serial.println("  >> Si REG_OP_MODE != 0x83: radio no entró en TX");
+      Serial.println("  >> Si REG_OP_MODE == 0x83 e IRQ sin TxDone: problema de potencia/antena");
     }
-    // Volver a modo RX para escuchar comandos
-    rf95.setModeRx();
-    sent = true;
   } else {
     Serial.println("  ERROR    : payload demasiado grande");
   }
