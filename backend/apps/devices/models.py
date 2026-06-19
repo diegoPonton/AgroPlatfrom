@@ -57,11 +57,13 @@ class Device(models.Model):
 class DeviceCommand(models.Model):
     COMMAND_TYPES = [
         ('set_sleep', 'Cambiar intervalo de envío'),
-        ('disable_sensor', 'Desactivar sensor'),
-        ('enable_sensor', 'Activar sensor'),
+        ('enable_sensor', 'Activar/desactivar sensor'),
+        ('set_espnow_channel', 'Cambiar canal ESP-NOW'),
         ('restart', 'Reiniciar dispositivo'),
-        ('set_lora_sf', 'Cambiar LoRa Spreading Factor'),
-        ('set_lora_power', 'Cambiar potencia LoRa (dBm)'),
+        ('set_device_id', 'Cambiar ID de dispositivo'),
+        # Mantenidos por compatibilidad (ignorados en modo ESP-NOW)
+        ('set_lora_sf', 'LoRa SF (ignorado en modo ESP-NOW)'),
+        ('set_lora_power', 'LoRa potencia (ignorado en modo ESP-NOW)'),
     ]
     STATUS_CHOICES = [
         ('pending', 'Pendiente'),

@@ -5,7 +5,7 @@ from .models import FirmwareBuild, FlashLog
 class FirmwareBuildSerializer(serializers.ModelSerializer):
     class Meta:
         model = FirmwareBuild
-        fields = ('id', 'version', 'target', 'binary', 'config_template', 'notes', 'compiled_at', 'status', 'build_log')
+        fields = ('id', 'version', 'target', 'binary', 'config_template', 'notes', 'compiled_at', 'status', 'build_log', 'flash_offset')
         read_only_fields = ('compiled_at', 'status', 'build_log')
 
 

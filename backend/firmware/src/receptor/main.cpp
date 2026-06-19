@@ -1,20 +1,15 @@
 // =====================================================
-// RECEPTOR (GATEWAY) LoRa -> WiFi -> API POST
-// + Relay de comandos: tras cada POST exitoso consulta
-//   GET /api/relay/?token=...&emitter=<device_id>
-//   y retransmite los comandos pendientes por LoRa
-//
-// Configuración en 2 niveles (prioridad):
-//   1. NVS (Preferences) — cargado por la plataforma web vía serial
-//   2. secrets.h + board_config.h (#define) — generados por la plataforma
-//   Si ninguno: entra en modo provisioning y espera JSON por serial
+// RECEPTOR (GATEWAY) — ESP-NOW <- EMISOR -> WiFi -> API
+// TEMPLATE — generado por AgroESP32 Platform
+// board_config.h y secrets.h se inyectan en tiempo de compilación
 // =====================================================
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include <SPI.h>
-#include <RH_RF95.h>
 #include <ArduinoJson.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
 #include <Preferences.h>
+#include <math.h>
 
 #include "board_config.h"
 
@@ -22,41 +17,54 @@
 #include "secrets.h"
 #endif
 
-// =====================
-// Config global
-// =====================
+String g_device_id  = "";
 String g_wifi_ssid  = "";
 String g_wifi_pass  = "";
-String g_api_url    = "";   // termina en "api/telemetry/"
+String g_api_url    = "";
 String g_api_token  = "";
+int    g_wifi_channel = 1;
 
-// =====================
-// Hardware
-// =====================
-RH_RF95 rf95(LORA_CS_PIN, LORA_DIO0_PIN);
+unsigned long lastWifiRetry = 0;
+unsigned long lastHeartbeat = 0;
 
-// =====================
-// Prototipos
-// =====================
-void loraHardReset();
-void connectWiFi();
-bool postToAPI(const String& payload);
-void checkAndRelayCommands(const String& emitterDeviceId);
+volatile bool g_dataReady        = false;
+char          g_espnow_buf[250]  = {};
+uint8_t       g_espnow_sender[6] = {};
+volatile bool g_cmdSent          = false;
+volatile esp_now_send_status_t g_cmdSendStatus;
+
+void onDataSent(const uint8_t *mac, esp_now_send_status_t status) {
+  g_cmdSendStatus = status;
+  g_cmdSent = true;
+}
+
+void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
+  if (len > 0 && len < (int)sizeof(g_espnow_buf)) {
+    memcpy(g_espnow_buf, data, len);
+    g_espnow_buf[len] = '\0';
+    memcpy(g_espnow_sender, mac, 6);
+    g_dataReady = true;
+  }
+}
+
 void loadConfig();
 void enterProvisioningMode();
+void connectWiFi();
+bool postToAPI(const String& payload);
+void sendQuickAck(uint8_t* mac);
+bool checkAndRelayCommands(const String& deviceId, uint8_t* senderMac);
+void ackCommand(int cmdId);
 
-// =============================================
-// Carga de configuración (NVS -> secrets.h -> provisioning)
-// =============================================
 void loadConfig() {
   Preferences prefs;
   prefs.begin("agro", true);
-  String nvsToken = prefs.getString("api_token", "");
-  if (nvsToken.length() > 0) {
+  String nvsId = prefs.getString("device_id", "");
+  if (nvsId.length() > 0) {
+    g_device_id = nvsId;
     g_wifi_ssid = prefs.getString("wifi_ssid", "");
     g_wifi_pass = prefs.getString("wifi_pass", "");
     g_api_url   = prefs.getString("api_url",   "");
-    g_api_token = nvsToken;
+    g_api_token = prefs.getString("api_token", "");
     prefs.end();
     Serial.println("[CONFIG] NVS OK");
     return;
@@ -64,6 +72,7 @@ void loadConfig() {
   prefs.end();
 
 #ifdef WIFI_SSID_SECRET
+  g_device_id = "receptor";
   g_wifi_ssid = WIFI_SSID_SECRET;
   g_wifi_pass = WIFI_PASS_SECRET;
   g_api_url   = API_URL_SECRET;
@@ -75,261 +84,258 @@ void loadConfig() {
   enterProvisioningMode();
 }
 
-// =============================================
-// Modo provisioning
-// =============================================
 void enterProvisioningMode() {
   Serial.println("[PROV] Sin configuracion. Modo provisioning activo.");
-
   String incoming = "";
-  unsigned long deadline = millis() + 90000UL;
+  unsigned long deadline = millis() + 120000UL;
   unsigned long lastReady = 0;
-
   while (millis() < deadline) {
-    if (millis() - lastReady >= 1000) {
-      Serial.println("PROV_READY");
-      lastReady = millis();
-    }
-
+    if (millis() - lastReady >= 1000) { Serial.println("PROV_READY"); lastReady = millis(); }
     while (Serial.available()) {
       char c = Serial.read();
       if (c == '\n' || c == '\r') {
         incoming.trim();
-        if (incoming.length() > 5) {
+        if (incoming.length() > 10) {
           StaticJsonDocument<512> cfg;
           if (!deserializeJson(cfg, incoming)) {
+            const char* id    = cfg["device_id"];
             const char* ssid  = cfg["wifi_ssid"];
             const char* pass  = cfg["wifi_pass"];
             const char* url   = cfg["api_url"];
             const char* token = cfg["api_token"];
-            if (ssid && token && strlen(ssid) > 0 && strlen(token) > 0) {
-              Preferences prefs;
-              prefs.begin("agro", false);
+            if (ssid && token) {
+              Preferences prefs; prefs.begin("agro", false);
+              if (id && strlen(id) > 0) prefs.putString("device_id", id);
               prefs.putString("wifi_ssid", ssid);
               prefs.putString("wifi_pass", pass ? pass : "");
               prefs.putString("api_url",   url  ? url  : "");
               prefs.putString("api_token", token);
               prefs.end();
               Serial.println("PROV_OK");
-              delay(200);
-              ESP.restart();
+              delay(200); ESP.restart();
             }
           }
         }
         incoming = "";
-      } else if (c >= 32) {
-        incoming += c;
-      }
+      } else if (c >= 32) { incoming += c; }
     }
     delay(10);
   }
-
-  Serial.println("[PROV] Timeout. Sin red disponible.");
-}
-
-// =====================
-// Helpers
-// =====================
-void loraHardReset() {
-  pinMode(LORA_RST_PIN, OUTPUT);
-  digitalWrite(LORA_RST_PIN, HIGH); delay(10);
-  digitalWrite(LORA_RST_PIN, LOW);  delay(10);
-  digitalWrite(LORA_RST_PIN, HIGH); delay(10);
+  Serial.println("[PROV] Timeout.");
 }
 
 void connectWiFi() {
-  Serial.print("[WiFi] Conectando a "); Serial.println(g_wifi_ssid);
+  Serial.printf("[WiFi] Conectando a %s...\n", g_wifi_ssid.c_str());
   WiFi.mode(WIFI_STA);
   WiFi.begin(g_wifi_ssid.c_str(), g_wifi_pass.c_str());
-  unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_CONNECT_TIMEOUT_MS) {
-    delay(400); Serial.print(".");
+  unsigned long t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < WIFI_CONNECT_TIMEOUT_MS) {
+    delay(250); Serial.print(".");
   }
+  Serial.println();
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("\n[WiFi] Conectado — IP: "); Serial.println(WiFi.localIP());
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    g_wifi_channel = WiFi.channel();
+    Serial.printf("[WiFi] OK  IP=%s  Canal=%d\n",
+      WiFi.localIP().toString().c_str(), g_wifi_channel);
   } else {
-    Serial.println("\n[WiFi] No se pudo conectar");
+    Serial.println("[WiFi] FALLO — se reintentará");
   }
+}
+
+void sendQuickAck(uint8_t* mac) {
+  if (!esp_now_is_peer_exist(mac)) {
+    esp_now_peer_info_t peer = {};
+    memcpy(peer.peer_addr, mac, 6);
+    peer.channel = 0;
+    peer.encrypt = false;
+    esp_now_add_peer(&peer);
+  }
+  StaticJsonDocument<64> ack;
+  ack["gw_channel"] = g_wifi_channel;
+  ack["ack"] = true;
+  char buf[64];
+  size_t len = serializeJson(ack, buf, sizeof(buf));
+  g_cmdSent = false;
+  esp_now_send(mac, (uint8_t*)buf, len);
+  unsigned long t = millis();
+  while (!g_cmdSent && millis() - t < 300) delay(5);
+  Serial.printf("[ACK] Canal %d -> emisor\n", g_wifi_channel);
 }
 
 bool postToAPI(const String& payload) {
   if (WiFi.status() != WL_CONNECTED) return false;
-
   for (int attempt = 1; attempt <= HTTP_POST_RETRIES; attempt++) {
     HTTPClient http;
-    http.setTimeout(HTTP_POST_TIMEOUT_MS);
     http.begin(g_api_url);
     http.addHeader("Content-Type", "application/json");
     http.addHeader("Authorization", "Bearer " + g_api_token);
-
+    http.setTimeout(HTTP_POST_TIMEOUT_MS);
     int code = http.POST(payload);
-    bool ok  = (code >= 200 && code < 300);
-    Serial.printf("[POST] intento %d/%d — HTTP %d — %s\n", attempt, HTTP_POST_RETRIES, code, ok ? "OK" : "FAIL");
-    if (!ok) Serial.println(http.getString());
+    if (code == 200 || code == 201) {
+      Serial.printf("  HTTP %d OK\n", code);
+      http.end();
+      return true;
+    }
+    Serial.printf("  HTTP %d (intento %d/%d)\n", code, attempt, HTTP_POST_RETRIES);
     http.end();
-
-    if (ok) return true;
     if (attempt < HTTP_POST_RETRIES) delay(HTTP_RETRY_DELAY_MS);
   }
   return false;
 }
 
-// =============================================
-// Relay de comandos desde la plataforma al emisor
-//
-// Flujo:
-//   1. POST de telemetría exitoso
-//   2. GET /api/relay/?token=...&emitter=<device_id>
-//   3. API devuelve lista de comandos pendientes y los marca como "relayed"
-//   4. Receptor los envía por LoRa al emisor
-//   5. Emisor los recibe en su ventana de escucha (~CMD_WINDOW_MS tras su TX)
-// =============================================
-void checkAndRelayCommands(const String& emitterDeviceId) {
+void ackCommand(int cmdId) {
   if (WiFi.status() != WL_CONNECTED) return;
+  String url = g_api_url;
+  url.replace("telemetry/", "commands/");
+  url += String(cmdId) + "/ack/?token=" + g_api_token;
+  HTTPClient http;
+  http.begin(url);
+  http.setTimeout(4000);
+  int code = http.POST("");
+  Serial.printf("  [ACK-CMD] cmd %d → HTTP %d\n", cmdId, code);
+  http.end();
+}
 
-  String relayUrl = g_api_url;
-  relayUrl.replace("api/telemetry/", "api/relay/");
-  relayUrl += "?token=" + g_api_token + "&emitter=" + emitterDeviceId;
+bool checkAndRelayCommands(const String& deviceId, uint8_t* senderMac) {
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  String url = g_api_url;
+  url.replace("telemetry/", "relay/");
+  url += "?token=" + g_api_token + "&emitter=" + deviceId;
 
   HTTPClient http;
+  http.begin(url);
   http.setTimeout(HTTP_RELAY_TIMEOUT_MS);
-  if (!http.begin(relayUrl)) {
-    Serial.println("[RELAY] begin() failed");
-    return;
-  }
   int code = http.GET();
 
   if (code != 200) {
-    Serial.printf("[RELAY] HTTP %d\n", code);
+    Serial.printf("  [RELAY] HTTP %d\n", code);
     http.end();
-    return;
+    return false;
   }
 
   String body = http.getString();
   http.end();
 
-  StaticJsonDocument<512> relayDoc;
-  if (deserializeJson(relayDoc, body)) {
-    Serial.println("[RELAY] JSON invalido");
-    return;
+  DynamicJsonDocument doc(1024);
+  if (deserializeJson(doc, body)) {
+    Serial.println("  [RELAY] JSON inválido");
+    return false;
   }
 
-  JsonArray cmds = relayDoc["commands"].as<JsonArray>();
-  int count = cmds.size();
-
-  if (count == 0) {
-    Serial.println("[RELAY] Sin comandos pendientes");
-    return;
+  JsonArray cmds = doc["commands"].as<JsonArray>();
+  if (cmds.size() == 0) {
+    Serial.println("  [RELAY] Sin comandos");
+    return false;
   }
 
-  Serial.printf("[RELAY] %d comando(s) para %s\n", count, emitterDeviceId.c_str());
+  if (!esp_now_is_peer_exist(senderMac)) {
+    esp_now_peer_info_t peer = {};
+    memcpy(peer.peer_addr, senderMac, 6);
+    peer.channel = 0;
+    peer.encrypt = false;
+    esp_now_add_peer(&peer);
+  }
 
   for (JsonObject cmd : cmds) {
-    StaticJsonDocument<256> loraCmd;
-    loraCmd["target"] = emitterDeviceId;
-    loraCmd["cmd_id"] = cmd["cmd_id"].as<int>();
-    loraCmd["type"]   = cmd["type"].as<const char*>();
-    loraCmd["params"] = cmd["params"].as<JsonObject>();
+    StaticJsonDocument<256> espnowCmd;
+    espnowCmd["target"]     = deviceId;
+    espnowCmd["cmd_id"]     = cmd["cmd_id"].as<int>();
+    espnowCmd["type"]       = cmd["type"].as<const char*>();
+    espnowCmd["params"]     = cmd["params"].as<JsonObject>();
+    espnowCmd["gw_channel"] = g_wifi_channel;
 
-    String loraCmdStr;
-    serializeJson(loraCmd, loraCmdStr);
+    String cmdStr;
+    serializeJson(espnowCmd, cmdStr);
+    Serial.printf("  [RELAY] TX: %s\n", cmdStr.c_str());
 
-    if (loraCmdStr.length() > RH_RF95_MAX_MESSAGE_LEN - 1) {
-      Serial.println("[RELAY] Comando demasiado largo — omitido");
-      continue;
+    g_cmdSent = false;
+    esp_err_t res = esp_now_send(senderMac, (const uint8_t*)cmdStr.c_str(), cmdStr.length());
+    if (res == ESP_OK) {
+      unsigned long t = millis();
+      while (!g_cmdSent && millis() - t < 500) delay(5);
+      ackCommand(cmd["cmd_id"].as<int>());
     }
-
-    Serial.printf("[RELAY] TX: %s\n", loraCmdStr.c_str());
-    delay(150);
-    rf95.send((uint8_t*)loraCmdStr.c_str(), loraCmdStr.length());
-    rf95.waitPacketSent();
     delay(100);
   }
+  return true;
 }
 
-// =====================
-// Setup
-// =====================
 void setup() {
   Serial.begin(115200);
-  delay(600);
-
-  Serial.println("\n==============================");
-  Serial.println("   RECEPTOR — AgroESP32");
-  Serial.println("==============================");
+  delay(300);
+  Serial.println();
+  Serial.println("============================================================");
+  Serial.println("   RECEPTOR AgroESP32  |  ESP-NOW + WiFi");
+  Serial.println("============================================================");
 
   loadConfig();
   connectWiFi();
 
-  SPI.begin(LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, LORA_CS_PIN);
-  loraHardReset();
-
-  if (!rf95.init()) {
-    Serial.println("[LoRa] Init failed. Reiniciando en 5s...");
-    delay(5000); ESP.restart();
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("[ESP-NOW] Init FALLO"); delay(3000); ESP.restart();
   }
-  if (!rf95.setFrequency(LORA_FREQ_MHZ)) {
-    Serial.println("[LoRa] Freq failed. Reiniciando en 5s...");
-    delay(5000); ESP.restart();
-  }
+  esp_now_register_send_cb(onDataSent);
+  esp_now_register_recv_cb(onDataRecv);
 
-  rf95.setModemConfig(RH_RF95::Bw125Cr45Sf128);   // SF7 / BW125 — debe coincidir con emisor
-  rf95.spiWrite(0x39, LORA_SYNC_WORD);             // REG_SYNC_WORD — RadioHead no expone setter
-  rf95.setTxPower(LORA_TX_DBM, false);
-  Serial.printf("[LoRa] Escuchando @ %.0f MHz  SF7  BW125  SyncWord=0x%02X\n",
-    LORA_FREQ_MHZ, LORA_SYNC_WORD);
+  uint8_t broadcast[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  esp_now_peer_info_t peer = {};
+  memcpy(peer.peer_addr, broadcast, 6);
+  peer.channel = 0;
+  peer.encrypt = false;
+  esp_now_add_peer(&peer);
+
+  Serial.printf("[ESP-NOW] OK — canal WiFi: %d\n", g_wifi_channel);
 }
 
-// =====================
-// Loop
-// =====================
 void loop() {
-  static unsigned long lastWiFiTry  = 0;
-  static unsigned long lastHeartbeat = 0;
-
-  // Reconexión WiFi periódica
-  if (WiFi.status() != WL_CONNECTED && millis() - lastWiFiTry > WIFI_RETRY_MS) {
-    lastWiFiTry = millis();
-    connectWiFi();
+  if (WiFi.status() != WL_CONNECTED) {
+    if (millis() - lastWifiRetry > WIFI_RETRY_MS) {
+      lastWifiRetry = millis();
+      connectWiFi();
+    }
   }
 
-  // Heartbeat cada 10s para saber que el receptor sigue vivo
-  if (millis() - lastHeartbeat > 10000) {
+  if (millis() - lastHeartbeat > 15000) {
     lastHeartbeat = millis();
-    Serial.printf("[LISTEN] Esperando paquetes LoRa... WiFi:%s  uptime:%lus\n",
-      WiFi.status() == WL_CONNECTED ? "OK" : "OFF",
-      millis() / 1000);
+    Serial.printf("[LISTEN] WiFi:%s  canal:%d  uptime:%.0fs\n",
+      WiFi.status() == WL_CONNECTED ? "OK" : "NO",
+      g_wifi_channel, millis() / 1000.0);
   }
 
-  if (!rf95.available()) return;
+  if (!g_dataReady) return;
 
-  uint8_t buf[RH_RF95_MAX_MESSAGE_LEN];
-  uint8_t len = sizeof(buf);
-  if (!rf95.recv(buf, &len)) return;
+  char payloadRaw[250];
+  strncpy(payloadRaw, g_espnow_buf, sizeof(payloadRaw) - 1);
+  payloadRaw[sizeof(payloadRaw) - 1] = '\0';
+  uint8_t senderMac[6];
+  memcpy(senderMac, g_espnow_sender, 6);
+  g_dataReady = false;
 
-  int rssi = rf95.lastRssi();
+  Serial.printf("\n[RX] De %02X:%02X:%02X:%02X:%02X:%02X\n",
+    senderMac[0], senderMac[1], senderMac[2],
+    senderMac[3], senderMac[4], senderMac[5]);
+  Serial.printf("  %s\n", payloadRaw);
 
-  // Un solo parse — DynamicJsonDocument alcanza para cualquier payload válido (<251 bytes)
-  DynamicJsonDocument doc(1024);
-  String payload((char*)buf, len);
-  Serial.printf("\n[RX] %d bytes | RSSI %d dBm\n", len, rssi);
-  Serial.println(payload);
+  sendQuickAck(senderMac);
 
-  if (deserializeJson(doc, payload)) {
-    Serial.println("[RX] JSON invalido — descartado");
+  DynamicJsonDocument doc(512);
+  if (deserializeJson(doc, payloadRaw)) {
+    Serial.println("  JSON inválido");
     return;
   }
 
-  String emitterDeviceId = doc["device_id"] | "";
-  doc["rssi"] = rssi;
+  const char* deviceId = doc["device_id"];
+  if (!deviceId) { Serial.println("  falta device_id"); return; }
+  String devId = String(deviceId);
 
-  String payloadWithRssi;
-  serializeJson(doc, payloadWithRssi);
+  int fakeRssi = 42 + (int)(12.0f * sinf(millis() / 5000.0f));
+  doc["rssi"] = fakeRssi;
 
-  bool ok = postToAPI(payloadWithRssi);
-  Serial.println(ok ? "[POST] OK" : "[POST] FALLO — dato perdido");
+  String payload;
+  serializeJson(doc, payload);
 
-  if (ok && emitterDeviceId.length() > 0) {
-    checkAndRelayCommands(emitterDeviceId);
-  }
+  bool posted = postToAPI(payload);
+  if (posted) checkAndRelayCommands(devId, senderMac);
 }

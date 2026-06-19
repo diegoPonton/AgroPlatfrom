@@ -287,9 +287,10 @@ def gps_map(request):
                 lng = gps_blob.get('lng') or gps_blob.get('lon') or gps_blob.get('longitude')
                 if lat is not None and lng is not None:
                     try:
+                        alt_raw = gps_blob.get('alt') if gps_blob.get('alt') is not None else gps_blob.get('alt_m')
                         return {
                             'lat': float(lat), 'lng': float(lng),
-                            'alt': float(gps_blob['alt']) if gps_blob.get('alt') is not None else None,
+                            'alt': float(alt_raw) if alt_raw is not None else None,
                             'sats': gps_blob.get('sats'),
                             'hdop': gps_blob.get('hdop'),
                             'source': 'sensor',
@@ -400,6 +401,7 @@ def device_provision_info(request, pk):
 
     if device.device_type == 'receptor':
         prov_payload = {
+            'device_id': device.device_id,
             'wifi_ssid': cfg.get('wifi_ssid', ''),
             'wifi_pass': cfg.get('wifi_pass', ''),
             'api_url': f'{api_url}/api/telemetry/',
@@ -408,7 +410,8 @@ def device_provision_info(request, pk):
     else:
         prov_payload = {
             'device_id': device.device_id,
-            'sleep_minutes': cfg.get('sleep_minutes', 10),
+            'sleep_min': cfg.get('sleep_minutes', 10),
+            'espnow_ch': cfg.get('espnow_channel', 6),
         }
 
     return Response({
@@ -418,6 +421,7 @@ def device_provision_info(request, pk):
         'api_url': f'{api_url}/api/telemetry/',
         'wifi_ssid': cfg.get('wifi_ssid', ''),
         'sleep_minutes': cfg.get('sleep_minutes', 10),
+        'espnow_channel': cfg.get('espnow_channel', 6),
         'provisioning_payload': prov_payload,
     })
 
@@ -545,9 +549,17 @@ def command_ack(request, cmd_id):
         return Response({'detail': 'Rate limit exceeded.'}, status=429)
 
     try:
-        cmd = DeviceCommand.objects.get(pk=cmd_id, emitter__provisioning_token=token)
+        # El receptor (que tiene WiFi) confirma el envío usando su propio token.
+        # Se verifica que el emisor esté asignado a ese receptor.
+        cmd = DeviceCommand.objects.get(
+            pk=cmd_id,
+            emitter__assigned_gateway__provisioning_token=token,
+        )
     except DeviceCommand.DoesNotExist:
         return Response({'detail': 'No encontrado.'}, status=404)
+
+    if cmd.status == 'acked':
+        return Response({'ok': True})  # idempotente
 
     cmd.status = 'acked'
     cmd.acked_at = timezone.now()

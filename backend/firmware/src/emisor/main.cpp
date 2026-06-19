@@ -1,15 +1,13 @@
 // =====================================================
-// EMISOR (NODO SENSOR) -> LoRa
-// SHTC3 + DS18B20 + GPS + batería -> JSON -> RFM95W
+// EMISOR (NODO SENSOR) -> ESP-NOW -> RECEPTOR
+// SHTC3 + DS18B20 + GPS + batería -> JSON -> ESP-NOW
 //
-// + Ventana de comandos: tras enviar datos abre CMD_WINDOW_MS de escucha LoRa.
-//   Si llega un comando dirigido a este dispositivo, lo ejecuta y
-//   guarda la nueva configuración en NVS (sobrevive deep sleep).
-//
-// Configuración en 2 niveles (prioridad):
-//   1. NVS (Preferences) — cargado por la plataforma web vía serial
-//   2. secrets.h + board_config.h (#define) — generados por la plataforma
-//   Si ninguno: entra en modo provisioning y espera JSON por serial
+// Canal ESP-NOW: se detecta automáticamente.
+// Al despertar intenta el canal guardado en NVS primero,
+// luego escanea canales 1/6/11/13 si no recibe ACK.
+// El receptor confirma el canal correcto en < 200ms con
+// un ACK ESP-NOW que incluye {"gw_channel": X}.
+// El canal correcto se guarda en NVS para el siguiente ciclo.
 // =====================================================
 #include <Wire.h>
 #include <Adafruit_SHTC3.h>
@@ -17,9 +15,9 @@
 #include <DallasTemperature.h>
 #include <TinyGPSPlus.h>
 #include <ArduinoJson.h>
-#include <SPI.h>
-#include <RH_RF95.h>
-#include <math.h>
+#include <WiFi.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
 #include <esp_sleep.h>
 #include <Preferences.h>
 
@@ -30,21 +28,15 @@
 #endif
 
 // =====================
-// Config global (llenada por loadConfig)
+// Config global
 // =====================
-String  g_device_id    = "";
-int     g_sleep_min    = DEFAULT_SLEEP_MIN;
+String g_device_id    = "";
+int    g_sleep_min    = DEFAULT_SLEEP_MIN;
+int    g_espnow_channel = ESPNOW_CHANNEL; // cargado desde NVS, fallback a board_config.h
 
-// Flags de sensores habilitados (modificables remotamente)
 bool g_en_SHTC3   = SENSOR_SHTC3_DEFAULT;
 bool g_en_DS18B20 = SENSOR_DS18B20_DEFAULT;
 bool g_en_GPS     = SENSOR_GPS_DEFAULT;
-
-// Config LoRa (modificable remotamente)
-// g_lora_sf = 0 significa "no tocar" → RadioHead usa su default SF7 (Bw125Cr45Sf128)
-// El receptor también debe usar el mismo SF. Cambiar solo coordinando ambos lados.
-int g_lora_sf  = LORA_SF_DEFAULT;
-int g_lora_pwr = LORA_TX_DBM;
 
 // =====================
 // RTC memory — sobrevive deep sleep
@@ -71,24 +63,7 @@ struct GpsReading {
 };
 
 // =====================
-// Prototipos
-// =====================
-void loraHardReset();
-void readGPS();
-void setupBatteryAdc();
-float readVbat();
-int vbatToPercent(float v);
-THReading readSHTC3();
-DSReading readDS18B20();
-void buildJsonPayload(String &out, const THReading&, const DSReading&,
-                      const GpsReading&, float vbat, int batPct, int gpsLevel);
-void processCommand(const String& rawCmd);
-void goToDeepSleep();
-void enterProvisioningMode();
-void loadConfig();
-
-// =====================
-// Hardware (pines desde board_config.h)
+// Hardware
 // =====================
 TinyGPSPlus gps;
 HardwareSerial GPSSerial(1);
@@ -98,63 +73,85 @@ DallasTemperature ds(&oneWire);
 DeviceAddress dsAddr;
 bool dsFound = false;
 
-RH_RF95 rf95(LORA_CS_PIN, LORA_DIO0_PIN);
+// =====================
+// ESP-NOW
+// =====================
+volatile bool espnowSent       = false;
+volatile esp_now_send_status_t espnowSendStatus;
+volatile bool cmdReceived      = false;
+char          cmdBuf[250]      = {};
 
-// =============================================
-// Carga de configuración (NVS -> secrets.h -> provisioning)
-// =============================================
+void onDataSent(const uint8_t *mac, esp_now_send_status_t status) {
+  espnowSendStatus = status;
+  espnowSent = true;
+}
+
+void onDataRecv(const uint8_t *mac, const uint8_t *data, int len) {
+  if (len > 0 && len < (int)sizeof(cmdBuf)) {
+    memcpy(cmdBuf, data, len);
+    cmdBuf[len] = '\0';
+    cmdReceived = true;
+  }
+}
+
+// =====================
+// Prototipos
+// =====================
+void readGPS();
+void setupBatteryAdc();
+float readVbat();
+int vbatToPercent(float v);
+THReading readSHTC3();
+DSReading readDS18B20();
+void buildJsonPayload(String &out, const THReading&, const DSReading&,
+                      const GpsReading&, float vbat, int batPct, int gpsLevel);
+void processPacket(const String& raw);
+void processCommand(const String& rawCmd);
+void goToDeepSleep();
+void enterProvisioningMode();
+void loadConfig();
+
+// =====================
+// Carga de configuración
+// =====================
 void loadConfig() {
   Preferences prefs;
   prefs.begin("agro", true);
   String nvsId = prefs.getString("device_id", "");
-  int nvsSleep  = prefs.getInt("sleep_min", 0);
-
-  g_en_SHTC3   = prefs.getBool("en_SHTC3",   SENSOR_SHTC3_DEFAULT);
-  g_en_DS18B20 = prefs.getBool("en_DS18B20", SENSOR_DS18B20_DEFAULT);
-  g_en_GPS     = prefs.getBool("en_GPS",     SENSOR_GPS_DEFAULT);
-  g_lora_sf    = prefs.getInt("lora_sf",  LORA_SF_DEFAULT);
-  g_lora_pwr   = prefs.getInt("lora_pwr", LORA_TX_DBM);
-  prefs.end();
-
   if (nvsId.length() > 0) {
-    g_device_id = nvsId;
-    g_sleep_min = (nvsSleep > 0) ? nvsSleep : DEFAULT_SLEEP_MIN;
-    Serial.println("[CONFIG] NVS OK — " + g_device_id);
-    Serial.printf("[CONFIG] sleep=%dmin  SHTC3=%s  DS18=%s  GPS=%s  SF=%d  PWR=%ddBm\n",
-      g_sleep_min,
-      g_en_SHTC3   ? "ON" : "OFF",
-      g_en_DS18B20 ? "ON" : "OFF",
-      g_en_GPS     ? "ON" : "OFF",
-      g_lora_sf, g_lora_pwr);
+    g_device_id      = nvsId;
+    g_sleep_min      = prefs.getInt("sleep_min",   DEFAULT_SLEEP_MIN);
+    g_espnow_channel = prefs.getInt("espnow_ch",   ESPNOW_CHANNEL);
+    g_en_SHTC3       = prefs.getBool("en_shtc3",   SENSOR_SHTC3_DEFAULT);
+    g_en_DS18B20     = prefs.getBool("en_ds18b20", SENSOR_DS18B20_DEFAULT);
+    g_en_GPS         = prefs.getBool("en_gps",     SENSOR_GPS_DEFAULT);
+    prefs.end();
+    Serial.println("[CONFIG] NVS OK");
     return;
   }
+  prefs.end();
 
 #ifdef DEVICE_ID_SECRET
-  g_device_id = DEVICE_ID_SECRET;
-  g_sleep_min = SLEEP_MINUTES;
-  Serial.println("[CONFIG] secrets.h — " + g_device_id);
+  g_device_id      = DEVICE_ID_SECRET;
+  g_sleep_min      = SLEEP_MINUTES;
+  g_espnow_channel = ESPNOW_CHANNEL;
+  Serial.printf("[CONFIG] secrets.h — %s  canal=%d\n", g_device_id.c_str(), g_espnow_channel);
   return;
 #endif
 
   enterProvisioningMode();
 }
 
-// =============================================
+// =====================
 // Modo provisioning
-// =============================================
+// =====================
 void enterProvisioningMode() {
-  Serial.println("[PROV] Sin configuracion detectada. Modo provisioning activo.");
-
+  Serial.println("[PROV] Sin configuracion. Modo provisioning activo.");
   String incoming = "";
   unsigned long deadline = millis() + 90000UL;
   unsigned long lastReady = 0;
-
   while (millis() < deadline) {
-    if (millis() - lastReady >= 1000) {
-      Serial.println("PROV_READY");
-      lastReady = millis();
-    }
-
+    if (millis() - lastReady >= 1000) { Serial.println("PROV_READY"); lastReady = millis(); }
     while (Serial.available()) {
       char c = Serial.read();
       if (c == '\n' || c == '\r') {
@@ -162,210 +159,195 @@ void enterProvisioningMode() {
         if (incoming.length() > 5) {
           StaticJsonDocument<256> cfg;
           if (!deserializeJson(cfg, incoming)) {
-            const char* did = cfg["device_id"];
-            int sm = cfg["sleep_minutes"] | DEFAULT_SLEEP_MIN;
-            if (did && strlen(did) > 0) {
-              Preferences prefs;
-              prefs.begin("agro", false);
-              prefs.putString("device_id", did);
-              prefs.putInt("sleep_min", sm);
+            const char* id  = cfg["device_id"];
+            int sleepMin    = cfg["sleep_min"] | DEFAULT_SLEEP_MIN;
+            int espnowCh    = cfg["espnow_ch"] | ESPNOW_CHANNEL;
+            if (id && strlen(id) > 0) {
+              Preferences prefs; prefs.begin("agro", false);
+              prefs.putString("device_id", id);
+              prefs.putInt("sleep_min", sleepMin);
+              prefs.putInt("espnow_ch", espnowCh);
               prefs.end();
               Serial.println("PROV_OK");
-              delay(200);
-              ESP.restart();
+              delay(200); ESP.restart();
             }
           }
         }
         incoming = "";
-      } else if (c >= 32) {
-        incoming += c;
-      }
+      } else if (c >= 32) { incoming += c; }
     }
     delay(10);
   }
-
-  Serial.println("[PROV] Timeout. Usando defaults temporales.");
-  g_device_id = "agro-sin-config";
-  g_sleep_min = DEFAULT_SLEEP_MIN;
+  Serial.println("[PROV] Timeout.");
 }
 
 // =====================
-// Battery
+// Batería ADC
 // =====================
-void setupBatteryAdc() {
-  analogReadResolution(12);
-  analogSetAttenuation(ADC_11db);
-  analogRead(BAT_ADC_PIN);
-}
+void setupBatteryAdc() { analogSetAttenuation(ADC_11db); }
 
 float readVbat() {
-  uint32_t acc = 0;
-  for (int i = 0; i < BAT_SAMPLES; i++) { acc += analogRead(BAT_ADC_PIN); delay(2); }
-  return ((float)acc / BAT_SAMPLES) * (BAT_VREF / BAT_ADC_MAX) * BAT_DIV_RATIO;
+  long sum = 0;
+  for (int i = 0; i < BAT_SAMPLES; i++) { sum += analogRead(BAT_ADC_PIN); delay(1); }
+  float adc  = (float)(sum / BAT_SAMPLES);
+  float vpin = (adc / BAT_ADC_MAX) * BAT_VREF;
+  return vpin * BAT_DIV_RATIO;
 }
 
 int vbatToPercent(float v) {
   if (v >= BAT_V_MAX) return 100;
   if (v <= BAT_V_MIN) return 0;
-  // Curva de descarga Li-Ion interpolada por tramos
-  if (v > 4.10f) return (int)map((int)(v*1000), 4100, (int)(BAT_V_MAX*1000), 90, 100);
-  if (v > 4.00f) return (int)map((int)(v*1000), 4000, 4100, 80,  90);
-  if (v > 3.92f) return (int)map((int)(v*1000), 3920, 4000, 70,  80);
-  if (v > 3.85f) return (int)map((int)(v*1000), 3850, 3920, 60,  70);
-  if (v > 3.80f) return (int)map((int)(v*1000), 3800, 3850, 50,  60);
-  if (v > 3.75f) return (int)map((int)(v*1000), 3750, 3800, 40,  50);
-  if (v > 3.70f) return (int)map((int)(v*1000), 3700, 3750, 30,  40);
-  if (v > 3.60f) return (int)map((int)(v*1000), 3600, 3700, 15,  30);
-  return (int)map((int)(v*1000), (int)(BAT_V_MIN*1000), 3600, 0, 15);
+  return (int)(100.0f * (v - BAT_V_MIN) / (BAT_V_MAX - BAT_V_MIN));
 }
 
 // =====================
-// Helpers
-// =====================
-void loraHardReset() {
-  pinMode(LORA_RST_PIN, OUTPUT);
-  digitalWrite(LORA_RST_PIN, HIGH); delay(10);
-  digitalWrite(LORA_RST_PIN, LOW);  delay(10);
-  digitalWrite(LORA_RST_PIN, HIGH); delay(10);
-}
-
-void readGPS() {
-  while (GPSSerial.available() > 0) gps.encode(GPSSerial.read());
-}
-
-// =====================
-// Sensor reads
+// Sensores
 // =====================
 THReading readSHTC3() {
-  THReading r{0, 0, false};
-  if (!g_en_SHTC3) return r;
+  if (!g_en_SHTC3) return {0, 0, false};
   sensors_event_t h, t;
-  if (shtc3.getEvent(&h, &t)) { r.temp_c = t.temperature; r.hum_pct = h.relative_humidity; r.ok = true; }
-  return r;
+  shtc3.getEvent(&h, &t);
+  if (isnan(t.temperature) || isnan(h.relative_humidity)) return {0, 0, false};
+  return {t.temperature, h.relative_humidity, true};
 }
 
 DSReading readDS18B20() {
-  DSReading r{0, false};
-  if (!g_en_DS18B20 || !dsFound) return r;
+  if (!g_en_DS18B20 || !dsFound) return {0, false};
   ds.requestTemperatures();
-  float t = ds.getTempC(dsAddr);
-  if (t != DEVICE_DISCONNECTED_C) { r.temp_c = t; r.ok = true; }
-  return r;
+  float temp = ds.getTempC(dsAddr);
+  if (temp == DEVICE_DISCONNECTED_C) return {0, false};
+  return {temp, true};
+}
+
+void readGPS() {
+  while (GPSSerial.available()) gps.encode(GPSSerial.read());
 }
 
 // =====================
-// JSON builder
-// gpsLevel 2:full 1:lat/lon/sats 0:lat/lon -1:sin GPS
+// JSON payload
 // =====================
 void buildJsonPayload(String &out, const THReading& amb, const DSReading& probe,
                       const GpsReading& gpsData, float vbat, int batPct, int gpsLevel) {
-  StaticJsonDocument<512> doc;
+  DynamicJsonDocument doc(512);
   doc["device_id"] = g_device_id;
 
-  JsonObject ambObj   = doc.createNestedObject("amb");
-  ambObj["ok"] = amb.ok;
-  if (amb.ok) { ambObj["temp_c"] = amb.temp_c; ambObj["hum_pct"] = amb.hum_pct; }
-
-  JsonObject probeObj = doc.createNestedObject("probe");
-  probeObj["ok"] = probe.ok;
-  if (probe.ok) probeObj["temp_c"] = probe.temp_c;
-
-  JsonObject batObj = doc.createNestedObject("bat");
-  batObj["v"] = vbat; batObj["pct"] = batPct;
-
-  if (gpsData.valid && gpsLevel >= 0) {
-    JsonObject g = doc.createNestedObject("gps");
-    g["valid"] = true;
-    if (gpsData.cached) g["cached"] = true;
-    g["lat"] = gpsData.lat; g["lon"] = gpsData.lon;
-    if (gpsLevel >= 1) g["sats"] = gpsData.sats;
-    if (gpsLevel >= 2) { g["alt_m"] = gpsData.alt_m; g["vel_kmh"] = gpsData.vel_kmh; g["hdop"] = gpsData.hdop; }
+  if (g_en_SHTC3) {
+    JsonObject a = doc.createNestedObject("amb");
+    a["ok"] = amb.ok;
+    if (amb.ok) { a["temp_c"] = amb.temp_c; a["hum_pct"] = amb.hum_pct; }
   }
-
-  out = ""; serializeJson(doc, out);
+  if (g_en_DS18B20) {
+    JsonObject p = doc.createNestedObject("probe");
+    p["ok"] = probe.ok;
+    if (probe.ok) p["temp_c"] = probe.temp_c;
+  }
+  {
+    JsonObject b = doc.createNestedObject("bat");
+    b["v"]   = vbat;
+    b["pct"] = batPct;
+  }
+  if (g_en_GPS && gpsData.valid && gpsLevel >= 0) {
+    JsonObject g = doc.createNestedObject("gps");
+    g["lat"] = gpsData.lat;
+    g["lon"] = gpsData.lon;
+    if (gpsLevel >= 1) {
+      g["alt_m"]   = gpsData.alt_m;
+      g["vel_kmh"] = gpsData.vel_kmh;
+      g["hdop"]    = gpsData.hdop;
+      g["sats"]    = gpsData.sats;
+    }
+    if (gpsData.cached) g["cached"] = true;
+  }
+  serializeJson(doc, out);
 }
 
-// =============================================
-// Procesamiento de comandos recibidos por LoRa
-//
-// Formato esperado del paquete:
-//   {"target":"<device_id>","cmd_id":N,"type":"...","params":{...}}
-//
-// Comandos soportados:
-//   set_sleep        params: {"minutes": N}
-//   disable_sensor   params: {"sensor": "SHTC3"|"DS18B20"|"GPS"|"BAT"}
-//   enable_sensor    params: {"sensor": "SHTC3"|"DS18B20"|"GPS"|"BAT"}
-//   set_lora_sf      params: {"sf": 7-12}
-//   set_lora_power   params: {"dbm": 2-20}
-//   restart          params: {}
-// =============================================
+// =====================
+// Procesar cualquier paquete ESP-NOW recibido
+// Maneja tanto ACKs rápidos {"gw_channel","ack"} como comandos {"target","type","params"}
+// =====================
+void processPacket(const String& raw) {
+  StaticJsonDocument<256> doc;
+  if (deserializeJson(doc, raw)) return;
+
+  // Actualizar canal si el receptor nos indica el suyo
+  if (doc.containsKey("gw_channel")) {
+    int ch = doc["gw_channel"] | g_espnow_channel;
+    if (ch >= 1 && ch <= 13 && ch != g_espnow_channel) {
+      g_espnow_channel = ch;
+      Preferences prefs;
+      prefs.begin("agro", false);
+      prefs.putInt("espnow_ch", ch);
+      prefs.end();
+      Serial.printf("  [CH] Canal actualizado a %d (guardado en NVS)\n", ch);
+    }
+  }
+
+  // Si tiene target+type es un comando de control
+  const char* type   = doc["type"];
+  const char* target = doc["target"];
+  if (type && target) {
+    processCommand(raw);
+  }
+}
+
+// =====================
+// Procesar comandos de control
+// =====================
 void processCommand(const String& rawCmd) {
   StaticJsonDocument<256> cmdDoc;
-  if (deserializeJson(cmdDoc, rawCmd)) {
-    Serial.println("[CMD] JSON invalido");
-    return;
-  }
+  if (deserializeJson(cmdDoc, rawCmd)) return;
 
-  const char* target = cmdDoc["target"];
-  if (!target || g_device_id != String(target)) {
-    Serial.printf("[CMD] Ignorado — target '%s' != '%s'\n",
-      target ? target : "null", g_device_id.c_str());
-    return;
-  }
+  const char* target  = cmdDoc["target"];
+  if (!target || g_device_id != target) return;
 
-  int         cmdId   = cmdDoc["cmd_id"] | 0;
-  const char* cmdType = cmdDoc["type"] | "";
-  Serial.printf("[CMD] Ejecutando cmd_id=%d type=%s\n", cmdId, cmdType);
+  const char* cmdType = cmdDoc["type"];
+  if (!cmdType) return;
 
   Preferences prefs;
-
   if (strcmp(cmdType, "set_sleep") == 0) {
-    int mins = cmdDoc["params"]["minutes"] | g_sleep_min;
-    mins = constrain(mins, 1, 60);
+    int min = cmdDoc["params"]["minutes"] | g_sleep_min;
+    min = constrain(min, 1, 1440);
     prefs.begin("agro", false);
-    prefs.putInt("sleep_min", mins);
+    prefs.putInt("sleep_min", min);
     prefs.end();
-    g_sleep_min = mins;
-    Serial.printf("[CMD] sleep_min -> %d min\n", mins);
+    g_sleep_min = min;
+    Serial.printf("[CMD] sleep -> %d min\n", min);
   }
-  else if (strcmp(cmdType, "disable_sensor") == 0) {
-    const char* sensor = cmdDoc["params"]["sensor"] | "";
-    String key = String("en_") + sensor;
+  else if (strcmp(cmdType, "set_espnow_channel") == 0) {
+    int ch = cmdDoc["params"]["channel"] | g_espnow_channel;
+    ch = constrain(ch, 1, 13);
     prefs.begin("agro", false);
-    prefs.putBool(key.c_str(), false);
+    prefs.putInt("espnow_ch", ch);
     prefs.end();
-    Serial.printf("[CMD] Sensor %s DESACTIVADO\n", sensor);
+    g_espnow_channel = ch;
+    esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+    Serial.printf("[CMD] canal ESP-NOW -> %d\n", ch);
   }
   else if (strcmp(cmdType, "enable_sensor") == 0) {
-    const char* sensor = cmdDoc["params"]["sensor"] | "";
-    String key = String("en_") + sensor;
-    prefs.begin("agro", false);
-    prefs.putBool(key.c_str(), true);
-    prefs.end();
-    Serial.printf("[CMD] Sensor %s ACTIVADO\n", sensor);
+    const char* sensor = cmdDoc["params"]["sensor"];
+    bool en = cmdDoc["params"]["enable"] | true;
+    if (sensor) {
+      prefs.begin("agro", false);
+      if (strcmp(sensor, "shtc3")   == 0) { g_en_SHTC3   = en; prefs.putBool("en_shtc3",   en); }
+      if (strcmp(sensor, "ds18b20") == 0) { g_en_DS18B20  = en; prefs.putBool("en_ds18b20", en); }
+      if (strcmp(sensor, "gps")     == 0) { g_en_GPS      = en; prefs.putBool("en_gps",     en); }
+      prefs.end();
+      Serial.printf("[CMD] sensor %s -> %s\n", sensor, en ? "on" : "off");
+    }
   }
-  else if (strcmp(cmdType, "set_lora_sf") == 0) {
-    int sf = cmdDoc["params"]["sf"] | g_lora_sf;
-    sf = constrain(sf, 7, 12);
-    prefs.begin("agro", false);
-    prefs.putInt("lora_sf", sf);
-    prefs.end();
-    Serial.printf("[CMD] LoRa SF -> %d (efecto en próximo ciclo)\n", sf);
-  }
-  else if (strcmp(cmdType, "set_lora_power") == 0) {
-    int dbm = cmdDoc["params"]["dbm"] | g_lora_pwr;
-    dbm = constrain(dbm, 2, 20);
-    prefs.begin("agro", false);
-    prefs.putInt("lora_pwr", dbm);
-    prefs.end();
-    g_lora_pwr = dbm;
-    rf95.setTxPower(dbm, false);
-    Serial.printf("[CMD] LoRa power -> %d dBm\n", dbm);
+  else if (strcmp(cmdType, "set_device_id") == 0) {
+    const char* newId = cmdDoc["params"]["device_id"];
+    if (newId && strlen(newId) > 0) {
+      prefs.begin("agro", false);
+      prefs.putString("device_id", newId);
+      prefs.end();
+      Serial.printf("[CMD] device_id -> %s\n", newId);
+      delay(500); ESP.restart();
+    }
   }
   else if (strcmp(cmdType, "restart") == 0) {
-    Serial.println("[CMD] Reiniciando en 1s...");
-    delay(1000);
-    ESP.restart();
+    Serial.println("[CMD] Reiniciando...");
+    delay(500); ESP.restart();
   }
   else {
     Serial.printf("[CMD] Tipo desconocido: %s\n", cmdType);
@@ -376,7 +358,7 @@ void processCommand(const String& rawCmd) {
 // Deep sleep
 // =====================
 void goToDeepSleep() {
-  Serial.print("[SLEEP] Durmiendo "); Serial.print(g_sleep_min); Serial.println(" min");
+  Serial.printf("[SLEEP] Durmiendo %d min\n", g_sleep_min);
   Serial.flush();
   esp_sleep_enable_timer_wakeup((uint64_t)g_sleep_min * 60ULL * 1000000ULL);
   esp_deep_sleep_start();
@@ -390,59 +372,52 @@ void setup() {
   delay(300);
   Serial.println();
   Serial.println("============================================================");
-  Serial.println("   EMISOR AgroESP32  |  inicio");
+  Serial.println("   EMISOR AgroESP32  |  ESP-NOW + Auto Canal");
   Serial.println("============================================================");
 
   loadConfig();
   setupBatteryAdc();
 
-  // --- Sensores ---
   Serial.println();
   Serial.println("[ SENSORES ]");
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
 
   if (g_en_SHTC3) {
-    if (shtc3.begin()) Serial.println("  SHTC3   : OK");
-    else               Serial.println("  SHTC3   : NO encontrado");
-  } else {
-    Serial.println("  SHTC3   : DESACTIVADO");
+    Serial.println(shtc3.begin() ? "  SHTC3   : OK" : "  SHTC3   : NO encontrado");
   }
-
   if (g_en_DS18B20) {
     ds.begin(); ds.setResolution(DS18B20_RESOLUTION);
     dsFound = ds.getAddress(dsAddr, 0);
     Serial.println(dsFound ? "  DS18B20 : OK" : "  DS18B20 : NO encontrado");
-  } else {
-    Serial.println("  DS18B20 : DESACTIVADO");
   }
-
   if (g_en_GPS) {
     GPSSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
-  } else {
-    Serial.println("  GPS     : DESACTIVADO");
   }
 
-  // --- LoRa ---
   Serial.println();
-  Serial.println("[ LORA ]");
-  SPI.begin(LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN, LORA_CS_PIN);
-  loraHardReset();
+  Serial.println("[ ESP-NOW ]");
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  delay(100);
+  esp_wifi_set_channel(g_espnow_channel, WIFI_SECOND_CHAN_NONE);
 
-  if (!rf95.init())                       { Serial.println("  ERROR: init fallido"); goToDeepSleep(); }
-  if (!rf95.setFrequency(LORA_FREQ_MHZ)) { Serial.println("  ERROR: frecuencia fallida"); goToDeepSleep(); }
-  rf95.setModemConfig(RH_RF95::Bw125Cr45Sf128);
-  rf95.spiWrite(0x39, LORA_SYNC_WORD);
-  if (g_lora_sf > 0) rf95.setSpreadingFactor(g_lora_sf);
-  rf95.setTxPower(g_lora_pwr, false);
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("  ERROR: esp_now_init fallido");
+    goToDeepSleep();
+  }
+  esp_now_register_send_cb(onDataSent);
+  esp_now_register_recv_cb(onDataRecv);
 
-  // Verificación SPI: REG_VERSION (0x42) debe devolver 0x12 en SX1276
-  uint8_t ver = rf95.spiRead(0x42);
-  Serial.printf("  Freq: %.0f MHz  SF: %s  BW: 125  SyncWord: 0x%02X  Power: %d dBm\n",
-    LORA_FREQ_MHZ, g_lora_sf > 0 ? String(g_lora_sf).c_str() : "7", LORA_SYNC_WORD, g_lora_pwr);
-  Serial.printf("  SX1276 version reg: 0x%02X %s\n", ver,
-    ver == 0x12 ? "(OK)" : "(ERROR — revisar cableado SPI/CS)");
+  uint8_t broadcast[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  esp_now_peer_info_t peer = {};
+  memcpy(peer.peer_addr, broadcast, 6);
+  peer.channel = g_espnow_channel;
+  peer.encrypt = false;
+  esp_now_add_peer(&peer);
 
-  // --- GPS ---
+  Serial.printf("  Canal NVS : %d\n", g_espnow_channel);
+  Serial.printf("  MAC       : %s\n", WiFi.macAddress().c_str());
+
   if (g_en_GPS) {
     Serial.println();
     Serial.println("[ GPS ]");
@@ -450,21 +425,19 @@ void setup() {
       ? (unsigned long)GPS_TIMEOUT_WARM_S * 1000UL
       : (unsigned long)GPS_TIMEOUT_COLD_S * 1000UL;
     if (rtc_gps_valid)
-      Serial.printf("  Cache disponible: lat %.5f lon %.5f\n", rtc_lat, rtc_lon);
+      Serial.printf("  Cache: lat %.5f lon %.5f\n", rtc_lat, rtc_lon);
     else
       Serial.println("  Cold start");
     Serial.printf("  Timeout: %lu s\n", gpsTimeout / 1000);
 
-    unsigned long t0 = millis();
-    unsigned long lastProgress = 0;
+    unsigned long t0 = millis(), lastProgress = 0;
     bool fixFound = false;
-
     while (millis() - t0 < gpsTimeout) {
       readGPS();
       if (gps.location.isValid() && gps.location.age() < 2000 && gps.satellites.value() >= GPS_MIN_SATS) {
         rtc_lat = gps.location.lat(); rtc_lon = gps.location.lng();
-        rtc_alt_m = gps.altitude.meters(); rtc_vel_kmh = gps.speed.kmph();
-        rtc_hdop = gps.hdop.hdop(); rtc_sats = gps.satellites.value();
+        rtc_alt_m = (float)gps.altitude.meters(); rtc_vel_kmh = (float)gps.speed.kmph();
+        rtc_hdop = (float)gps.hdop.hdop(); rtc_sats = gps.satellites.value();
         rtc_gps_valid = true; fixFound = true;
         break;
       }
@@ -476,35 +449,17 @@ void setup() {
       }
       delay(20);
     }
-
-    if (fixFound) {
+    if (fixFound)
       Serial.printf("  FIX OK: %.6f / %.6f  sats=%u\n", rtc_lat, rtc_lon, rtc_sats);
-    } else if (rtc_gps_valid) {
+    else if (rtc_gps_valid)
       Serial.println("  Sin fix nuevo — usando cache RTC");
-    } else {
+    else
       Serial.println("  SIN DATOS GPS");
-    }
   }
-
-  // Re-inicializar LoRa después del GPS loop.
-  // El SX1276 puede caer en SLEEP durante una espera larga. Re-init garantiza
-  // que el radio esté en STANDBY con la config correcta antes de TX.
-  Serial.println();
-  Serial.println("[ LORA RE-INIT ]");
-  loraHardReset();
-  if (!rf95.init())                       { Serial.println("  ERROR: init fallido"); goToDeepSleep(); }
-  if (!rf95.setFrequency(LORA_FREQ_MHZ)) { Serial.println("  ERROR: frecuencia fallida"); goToDeepSleep(); }
-  rf95.setModemConfig(RH_RF95::Bw125Cr45Sf128);
-  rf95.spiWrite(0x39, LORA_SYNC_WORD);
-  if (g_lora_sf > 0) rf95.setSpreadingFactor(g_lora_sf);
-  rf95.setTxPower(g_lora_pwr, false);
-  uint8_t modeAfterInit = rf95.spiRead(0x01);
-  Serial.printf("  OP_MODE post-init: 0x%02X %s\n", modeAfterInit,
-    modeAfterInit == 0x81 ? "(STANDBY OK)" : "(ERROR)");
 }
 
 // =====================
-// Loop: una vez y duerme
+// Loop: una vez, scan automático de canal, y duerme
 // =====================
 void loop() {
   if (g_en_GPS) readGPS();
@@ -516,92 +471,132 @@ void loop() {
 
   GpsReading gpsData = {false, false, 0, 0, 0, 0, 0, 0};
   if (g_en_GPS) {
-    bool freshFix = gps.location.isValid() && gps.location.age() < 3000 && gps.satellites.value() >= GPS_MIN_SATS;
+    bool freshFix = gps.location.isValid() && gps.location.age() < 3000
+                    && gps.satellites.value() >= GPS_MIN_SATS;
     if (freshFix) {
       gpsData = {true, false, gps.location.lat(), gps.location.lng(),
-                 gps.altitude.meters(), gps.speed.kmph(), gps.hdop.hdop(), gps.satellites.value()};
+                 (float)gps.altitude.meters(), (float)gps.speed.kmph(),
+                 (float)gps.hdop.hdop(), gps.satellites.value()};
     } else if (rtc_gps_valid) {
       gpsData = {true, true, rtc_lat, rtc_lon, rtc_alt_m, rtc_vel_kmh, rtc_hdop, rtc_sats};
     }
   }
 
-  const int MAX_LORA = RH_RF95_MAX_MESSAGE_LEN - 1;
+  const int MAX_ESPNOW = 250;
   String payload;
   buildJsonPayload(payload, amb, probe, gpsData, vbat, batPct, 2);
-  if (payload.length() > MAX_LORA) buildJsonPayload(payload, amb, probe, gpsData, vbat, batPct, 1);
-  if (payload.length() > MAX_LORA) buildJsonPayload(payload, amb, probe, gpsData, vbat, batPct, 0);
-  if (payload.length() > MAX_LORA) buildJsonPayload(payload, amb, probe, gpsData, vbat, batPct, -1);
+  if (payload.length() > MAX_ESPNOW) buildJsonPayload(payload, amb, probe, gpsData, vbat, batPct, 1);
+  if (payload.length() > MAX_ESPNOW) buildJsonPayload(payload, amb, probe, gpsData, vbat, batPct, 0);
+  if (payload.length() > MAX_ESPNOW) buildJsonPayload(payload, amb, probe, gpsData, vbat, batPct, -1);
 
   Serial.println();
   Serial.println("[ TRANSMISION ]");
   Serial.printf("  Bateria  : %.2f V  (%d%%)\n", vbat, batPct);
   if (amb.ok)        Serial.printf("  Ambiente : %.1f C  %.1f%% HR\n", amb.temp_c, amb.hum_pct);
-  else               Serial.println("  Ambiente : sin datos");
   if (probe.ok)      Serial.printf("  Suelo    : %.1f C\n", probe.temp_c);
-  else               Serial.println("  Suelo    : sin datos");
   if (gpsData.valid) Serial.printf("  GPS      : %.6f / %.6f  sats=%u%s\n",
     gpsData.lat, gpsData.lon, gpsData.sats, gpsData.cached ? " [cache]" : "");
   else               Serial.println("  GPS      : sin datos");
   Serial.printf("  Payload  : %d bytes\n", payload.length());
   Serial.printf("  JSON     : %s\n", payload.c_str());
 
-  bool sent = false;
-  if (payload.length() <= MAX_LORA) {
-    rf95.spiWrite(0x12, 0xFF);  // limpiar IRQ flags residuales
-    rf95.send((const uint8_t*)payload.c_str(), payload.length());
-
-    // Polling REG_IRQ_FLAGS con timeout 3s (evita colgar si DIO0 no interrumpe)
-    unsigned long txStart = millis();
-    bool txDone = false;
-    while (millis() - txStart < 3000) {
-      if (rf95.spiRead(0x12) & 0x08) {  // TxDone bit
-        rf95.spiWrite(0x12, 0xFF);
-        txDone = true;
-        break;
-      }
-      delay(5);
-    }
-
-    if (txDone) {
-      Serial.printf("  Enviado  : OK  (%lu ms)\n", millis() - txStart);
-      rf95.setModeRx();
-      sent = true;
-    } else {
-      uint8_t finalMode = rf95.spiRead(0x01);
-      uint8_t finalIrq  = rf95.spiRead(0x12);
-      Serial.printf("  Enviado  : TX timeout  OP_MODE=0x%02X  IRQ=0x%02X\n", finalMode, finalIrq);
-    }
-  } else {
+  if (payload.length() > MAX_ESPNOW) {
     Serial.println("  ERROR    : payload demasiado grande");
+    goToDeepSleep();
   }
 
-  // =============================================
-  // Ventana de comandos remotos (CMD_WINDOW_MS)
-  // El receptor tiene ~2s para: POST a la API + consultar relay + enviar LoRa.
-  // CMD_WINDOW_MS garantiza margen con latencia de red variable.
-  // =============================================
-  if (sent) {
-    Serial.println();
-    Serial.println("[ COMANDOS ]");
-    Serial.println("  Esperando comandos del receptor...");
+  // =====================
+  // CANAL AUTO-SCAN
+  // Prueba el canal del NVS primero. Si no recibe ACK del receptor
+  // en QUICK_ACK_MS, prueba canales comunes hasta encontrar el correcto.
+  // Solo se prueba una vez por ciclo; el canal aprendido se guarda en NVS.
+  // =====================
+  const uint8_t SCAN_CH[] = {1, 6, 11, 13};
+  const int     N_SCAN    = sizeof(SCAN_CH);
+  const int     QUICK_ACK_MS = 1200; // ms esperando ACK por canal
 
-    unsigned long cmdDeadline = millis() + CMD_WINDOW_MS;
-    bool cmdReceived = false;
-    while (millis() < cmdDeadline) {
-      if (rf95.available()) {
-        uint8_t cmdBuf[RH_RF95_MAX_MESSAGE_LEN];
-        uint8_t cmdLen = sizeof(cmdBuf);
-        if (rf95.recv(cmdBuf, &cmdLen)) {
-          String rawCmd((char*)cmdBuf, cmdLen);
-          Serial.printf("  Recibido : %s\n", rawCmd.c_str());
-          processCommand(rawCmd);
-          cmdReceived = true;
+  // Construir lista: canal NVS primero, luego los demás sin repetir
+  uint8_t tryChannels[N_SCAN + 1];
+  int nTry = 0;
+  tryChannels[nTry++] = (uint8_t)g_espnow_channel;
+  for (int i = 0; i < N_SCAN; i++) {
+    if (SCAN_CH[i] != (uint8_t)g_espnow_channel)
+      tryChannels[nTry++] = SCAN_CH[i];
+  }
+
+  uint8_t broadcast[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  bool ackReceived = false;
+
+  for (int ci = 0; ci < nTry && !ackReceived; ci++) {
+    uint8_t ch = tryChannels[ci];
+
+    esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+    delay(20);
+
+    if (ci == 0) {
+      Serial.printf("\n[ ESP-NOW ] Enviando en canal %d (NVS)...\n", ch);
+    } else {
+      Serial.printf("[ SCAN ] Sin ACK — probando canal %d...\n", ch);
+    }
+
+    espnowSent = false;
+    cmdReceived = false;
+    esp_err_t res = esp_now_send(broadcast, (const uint8_t*)payload.c_str(), payload.length());
+
+    if (res != ESP_OK) {
+      Serial.printf("  esp_now_send error: %d\n", res);
+      continue;
+    }
+
+    // Esperar confirmación de envío MAC
+    unsigned long t = millis();
+    while (!espnowSent && millis() - t < 1000) delay(5);
+
+    // Esperar ACK del receptor ({"gw_channel": X, "ack": true})
+    unsigned long t0 = millis();
+    while (millis() - t0 < QUICK_ACK_MS) {
+      if (cmdReceived) {
+        cmdReceived = false;
+        String raw = String(cmdBuf);
+        Serial.printf("  ACK RX (canal %d): %s\n", ch, raw.c_str());
+        processPacket(raw);
+        ackReceived = true;
+
+        // Guardar canal si cambiamos
+        if ((int)ch != g_espnow_channel) {
+          g_espnow_channel = (int)ch;
+          Preferences prefs;
+          prefs.begin("agro", false);
+          prefs.putInt("espnow_ch", (int)ch);
+          prefs.end();
+          Serial.printf("  [CH] Canal %d guardado en NVS\n", ch);
         }
         break;
       }
       delay(20);
     }
-    if (!cmdReceived) Serial.println("  Sin comandos.");
+  }
+
+  if (!ackReceived) {
+    Serial.println("  Sin ACK de receptor en ningún canal — dato puede haberse perdido");
+  }
+
+  // =====================
+  // Ventana de comandos de control
+  // Solo si se recibió ACK (canal correcto confirmado)
+  // =====================
+  if (ackReceived) {
+    Serial.printf("\n[ CMD WINDOW ] %d ms\n", CMD_WINDOW_MS);
+    unsigned long t0 = millis();
+    while (millis() - t0 < CMD_WINDOW_MS) {
+      if (cmdReceived) {
+        cmdReceived = false;
+        String raw = String(cmdBuf);
+        Serial.printf("  CMD RX: %s\n", raw.c_str());
+        processPacket(raw);
+      }
+      delay(20);
+    }
   }
 
   goToDeepSleep();
