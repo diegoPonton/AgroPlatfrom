@@ -426,6 +426,7 @@ function EmitterDetail({ device, liveReadings }: {
     time: timeFormat(r.received_at, selectedHours),
     tempAmb:   getNestedValue(r.payload, 'amb.temp_c'),
     humAmb:    getNestedValue(r.payload, 'amb.hum_pct'),
+    presionAmb: getNestedValue(r.payload, 'amb.pressure_hpa'),
     tempSonda: getNestedValue(r.payload, 'probe.temp_c'),
     batPct:    getNestedValue(r.payload, 'bat.pct'),
     batV:      getNestedValue(r.payload, 'bat.v'),
@@ -439,9 +440,10 @@ function EmitterDetail({ device, liveReadings }: {
   return (
     <div className="space-y-6">
       {/* KPI cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <KpiCard title="Temp. Ambiente" value={getNestedValue(p, 'amb.temp_c')} unit="°C" available={!!(p as Record<string,unknown>)?.amb} />
         <KpiCard title="Humedad" value={getNestedValue(p, 'amb.hum_pct')} unit="%" available={!!(p as Record<string,unknown>)?.amb} />
+        <KpiCard title="Presión" value={getNestedValue(p, 'amb.pressure_hpa')} unit="hPa" available={!!getNestedValue(p, 'amb.pressure_hpa')} />
         <KpiCard title="Temp. Sonda" value={getNestedValue(p, 'probe.temp_c')} unit="°C" available={!!(p as Record<string,unknown>)?.probe} />
         <KpiCard title="Batería" value={getNestedValue(p, 'bat.pct')} unit="%" available={!!(p as Record<string,unknown>)?.bat} />
       </div>
@@ -486,6 +488,7 @@ function EmitterDetail({ device, liveReadings }: {
         <div className="grid md:grid-cols-2 gap-4">
           <SensorChart data={chartData} dataKey="tempAmb"   color="#f97316" unit="°C"  label="Temperatura Ambiente" />
           <SensorChart data={chartData} dataKey="humAmb"    color="#3b82f6" unit="%"   label="Humedad Relativa" />
+          <SensorChart data={chartData} dataKey="presionAmb" color="#06b6d4" unit="hPa" label="Presión Atmosférica (BME280)" />
           <SensorChart data={chartData} dataKey="tempSonda" color="#ef4444" unit="°C"  label="Temperatura Sonda (DS18B20)" />
           <SensorChart data={chartData} dataKey="batPct"    color="#22c55e" unit="%"   label="Batería (%)" />
           <SensorChart data={chartData} dataKey="batV"      color="#a3e635" unit="V"   label="Voltaje Batería" />
