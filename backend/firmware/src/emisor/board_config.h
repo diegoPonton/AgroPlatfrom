@@ -4,7 +4,7 @@
 // Modificar desde la plataforma web — no editar a mano
 // =====================================================
 
-// --- LoRa SPI ---
+// --- LoRa SPI (RFM95W, 915 MHz) ---
 #define LORA_CS_PIN    25
 #define LORA_RST_PIN   14
 #define LORA_DIO0_PIN  26
@@ -12,17 +12,17 @@
 #define LORA_MISO_PIN  19
 #define LORA_MOSI_PIN  23
 #define LORA_FREQ_MHZ  915.0f
-// SF: 0 = default RadioHead (SF7). Cambiar solo si el receptor usa el mismo SF.
+// SF: 0 = default RadioLib (SF7). Cambiar solo si el receptor usa el mismo SF.
 #define LORA_SF_DEFAULT   0
 #define LORA_TX_DBM       20
 #define LORA_SYNC_WORD    0x12   // 0x12 = red privada, 0x34 = LoRaWAN público
-#define CMD_WINDOW_MS     7000   // ms que espera comandos tras TX
+#define CMD_WINDOW_MS      7000  // ventana de escucha LoRa tras cada TX (ms)
 
-// --- I2C (SHTC3 y otros sensores I2C) ---
+// --- I2C (sensor ambiental) ---
 #define I2C_SDA_PIN    21
 #define I2C_SCL_PIN    22
 
-// --- DS18B20 OneWire ---
+// --- DS18B20 OneWire (sonda de suelo) ---
 #define DS18B20_PIN        4
 #define DS18B20_RESOLUTION 12   // bits (9-12)
 
@@ -44,7 +44,9 @@
 #define BAT_V_MIN      3.20f   // por debajo de esto = 0%
 
 // --- Sensores habilitados por defecto (sobreescribible vía NVS/comando remoto) ---
-#define SENSOR_SHTC3_DEFAULT    true
+// Nodo actual: GY-39 (BME280) como sensor ambiental físico instalado.
+#define SENSOR_SHTC3_DEFAULT    false
+#define SENSOR_GY39_DEFAULT     true
 #define SENSOR_DS18B20_DEFAULT  true
 #define SENSOR_GPS_DEFAULT      true
 

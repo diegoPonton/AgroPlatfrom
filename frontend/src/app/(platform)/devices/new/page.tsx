@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge'
 
 const SENSOR_OPTIONS = [
   { type: 'SHTC3', label: 'SHTC3 — Temp/Humedad Ambiente' },
+  { type: 'GY39', label: 'GY-39 — Temp/Hum/Presión' },
   { type: 'DS18B20', label: 'DS18B20 — Temp Sonda' },
   { type: 'GPS', label: 'GPS — Posición' },
   { type: 'BAT', label: 'Batería' },

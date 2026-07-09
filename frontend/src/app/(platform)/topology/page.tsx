@@ -392,7 +392,7 @@ const CMD_OPTIONS: { value: CommandType; label: string; description: string }[] 
   { value: 'set_lora_power', label: 'LoRa Potencia (dBm)', description: '2 a 20 dBm' },
 ]
 
-const SENSOR_TYPES = ['SHTC3', 'DS18B20', 'GPS', 'BAT']
+const SENSOR_TYPES = ['SHTC3', 'GY39', 'DS18B20', 'GPS', 'BAT']
 
 const STATUS_BADGE: Record<string, string> = {
   pending: 'bg-amber-100 text-amber-700',

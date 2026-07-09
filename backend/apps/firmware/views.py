@@ -135,7 +135,8 @@ def _gen_emisor_board_config(cfg: dict) -> str:
         #define BAT_V_MIN      {float(bat.get('v_min', 3.20)):.2f}f
 
         // --- Sensores habilitados por defecto ---
-        #define SENSOR_SHTC3_DEFAULT    {str(sens.get('shtc3',   True)).lower()}
+        #define SENSOR_SHTC3_DEFAULT    {str(sens.get('shtc3',   False)).lower()}
+        #define SENSOR_GY39_DEFAULT     {str(sens.get('gy39',    True)).lower()}
         #define SENSOR_DS18B20_DEFAULT  {str(sens.get('ds18b20', True)).lower()}
         #define SENSOR_GPS_DEFAULT      {str(sens.get('gps',     True)).lower()}
 

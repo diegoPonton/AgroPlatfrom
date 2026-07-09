@@ -90,6 +90,7 @@ class DeviceCommand(models.Model):
 class Sensor(models.Model):
     SENSOR_TYPES = [
         ('SHTC3', 'SHTC3 — Temperatura/Humedad Ambiente'),
+        ('GY39', 'GY-39 — Temperatura/Humedad/Presión (BME280, I2C)'),
         ('DS18B20', 'DS18B20 — Temperatura Sonda'),
         ('GPS', 'GPS — Posición'),
         ('BAT', 'Batería — Voltaje/Porcentaje'),
