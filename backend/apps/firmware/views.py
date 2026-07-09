@@ -83,18 +83,31 @@ def _merge_bins(sections: list[tuple[int, str]], output_path: str) -> None:
 # ---------------------------------------------------------------------------
 
 def _gen_emisor_board_config(cfg: dict) -> str:
+    lora  = cfg.get('lora', {})
     i2c   = cfg.get('i2c', {})
     ds    = cfg.get('ds18b20', {})
     gps   = cfg.get('gps', {})
     bat   = cfg.get('battery', {})
     sens  = cfg.get('sensors_default', {})
     beh   = cfg.get('behavior', {})
-    espnow = cfg.get('espnow', {})
 
     return textwrap.dedent(f"""\
         #pragma once
         // GENERADO AUTOMÁTICAMENTE por AgroESP32 Platform — no editar a mano
         // {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}
+
+        // --- LoRa SPI ---
+        #define LORA_CS_PIN    {lora.get('cs_pin',   25)}
+        #define LORA_RST_PIN   {lora.get('rst_pin',  14)}
+        #define LORA_DIO0_PIN  {lora.get('dio0_pin', 26)}
+        #define LORA_SCK_PIN   {lora.get('sck_pin',  18)}
+        #define LORA_MISO_PIN  {lora.get('miso_pin', 19)}
+        #define LORA_MOSI_PIN  {lora.get('mosi_pin', 23)}
+        #define LORA_FREQ_MHZ  {float(lora.get('freq_mhz', 915.0)):.1f}f
+        #define LORA_SF_DEFAULT   {lora.get('sf', 0)}
+        #define LORA_TX_DBM       {lora.get('tx_dbm', 20)}
+        #define LORA_SYNC_WORD    0x{int(lora.get('sync_word', 0x12)):02X}
+        #define CMD_WINDOW_MS     {beh.get('cmd_window_ms', 7000)}
 
         // --- I2C ---
         #define I2C_SDA_PIN    {i2c.get('sda_pin', 21)}
@@ -128,21 +141,28 @@ def _gen_emisor_board_config(cfg: dict) -> str:
 
         // --- Comportamiento ---
         #define DEFAULT_SLEEP_MIN  {beh.get('sleep_min', 10)}
-
-        // --- ESP-NOW ---
-        // Canal inicial (se actualiza automáticamente desde NVS tras el primer ciclo exitoso)
-        #define ESPNOW_CHANNEL     {espnow.get('channel', 6)}
-        #define CMD_WINDOW_MS      {espnow.get('cmd_window_ms', 12000)}
     """)
 
 
 def _gen_receptor_board_config(cfg: dict) -> str:
-    net = cfg.get('network', {})
+    lora = cfg.get('lora', {})
+    net  = cfg.get('network', {})
 
     return textwrap.dedent(f"""\
         #pragma once
         // GENERADO AUTOMÁTICAMENTE por AgroESP32 Platform — no editar a mano
         // {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}
+
+        // --- LoRa SPI ---
+        #define LORA_CS_PIN    {lora.get('cs_pin',   25)}
+        #define LORA_RST_PIN   {lora.get('rst_pin',  14)}
+        #define LORA_DIO0_PIN  {lora.get('dio0_pin', 26)}
+        #define LORA_SCK_PIN   {lora.get('sck_pin',  18)}
+        #define LORA_MISO_PIN  {lora.get('miso_pin', 19)}
+        #define LORA_MOSI_PIN  {lora.get('mosi_pin', 23)}
+        #define LORA_FREQ_MHZ  {float(lora.get('freq_mhz', 915.0)):.1f}f
+        #define LORA_TX_DBM    {lora.get('tx_dbm', 13)}
+        #define LORA_SYNC_WORD 0x{int(lora.get('sync_word', 0x12)):02X}
 
         // --- Comportamiento red ---
         #define WIFI_CONNECT_TIMEOUT_MS  {net.get('wifi_connect_timeout_ms', 15000)}

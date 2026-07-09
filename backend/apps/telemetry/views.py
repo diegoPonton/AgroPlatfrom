@@ -101,14 +101,6 @@ def ingest(request):
     Device.objects.filter(pk=device.pk).update(last_seen=now)
     Device.objects.filter(pk=receptor.pk).update(last_seen=now)
 
-    # Guardar canal ESP-NOW del receptor si lo reporta en el payload
-    gw_channel = data.get('gw_channel')
-    if gw_channel and isinstance(gw_channel, int) and 1 <= gw_channel <= 13:
-        cfg = dict(receptor.config or {})
-        if cfg.get('espnow_channel') != gw_channel:
-            cfg['espnow_channel'] = gw_channel
-            Device.objects.filter(pk=receptor.pk).update(config=cfg)
-
     # Auto-geolocate receptor by IP if no manual location is set
     existing_loc = (receptor.config or {}).get('location')
     if not isinstance(existing_loc, dict) or existing_loc.get('source') != 'manual':
@@ -168,9 +160,7 @@ def _evaluate_alerts(device, payload: dict):
         if fn and fn(value, rule.threshold):
             event = AlertEvent.objects.create(rule=rule, value=value)
             if rule.channel == 'webhook' and rule.webhook_url:
-                threading.Thread(
-                    target=_fire_webhook, args=(rule, event, device, value), daemon=True
-                ).start()
+                _fire_webhook(rule, event, device, value)
 
 
 def _fire_webhook(rule, event, device, value):
