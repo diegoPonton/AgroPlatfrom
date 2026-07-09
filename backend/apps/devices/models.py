@@ -57,11 +57,9 @@ class Device(models.Model):
 class DeviceCommand(models.Model):
     COMMAND_TYPES = [
         ('set_sleep', 'Cambiar intervalo de envío'),
-        ('disable_sensor', 'Desactivar sensor'),
-        ('enable_sensor', 'Activar sensor'),
+        ('enable_sensor', 'Activar/desactivar sensor'),
+        ('set_device_id', 'Cambiar ID de dispositivo'),
         ('restart', 'Reiniciar dispositivo'),
-        ('set_lora_sf', 'Cambiar LoRa Spreading Factor'),
-        ('set_lora_power', 'Cambiar potencia LoRa (dBm)'),
     ]
     STATUS_CHOICES = [
         ('pending', 'Pendiente'),

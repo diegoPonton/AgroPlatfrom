@@ -70,11 +70,9 @@ export async function getTelemetryHistory(deviceId: number, hours = 24, limit = 
 
 export type CommandType =
   | 'set_sleep'
-  | 'disable_sensor'
   | 'enable_sensor'
+  | 'set_device_id'
   | 'restart'
-  | 'set_lora_sf'
-  | 'set_lora_power'
 
 export interface DeviceCommand {
   id: number

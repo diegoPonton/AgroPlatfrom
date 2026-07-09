@@ -385,14 +385,12 @@ function ReceptorPanel({ device, onClose }: { device: ReceptorItem; onClose: () 
 
 const CMD_OPTIONS: { value: CommandType; label: string; description: string }[] = [
   { value: 'set_sleep', label: 'Cambiar intervalo', description: 'Tiempo entre envíos (minutos)' },
-  { value: 'disable_sensor', label: 'Desactivar sensor', description: 'Desconectar sensor temporalmente' },
-  { value: 'enable_sensor', label: 'Activar sensor', description: 'Volver a activar sensor' },
+  { value: 'enable_sensor', label: 'Activar/desactivar sensor', description: 'Habilitar o deshabilitar un sensor del nodo' },
   { value: 'restart', label: 'Reiniciar', description: 'Reinicio suave del ESP32' },
-  { value: 'set_lora_sf', label: 'LoRa Spreading Factor', description: 'SF7 a SF12 (mayor = más alcance)' },
-  { value: 'set_lora_power', label: 'LoRa Potencia (dBm)', description: '2 a 20 dBm' },
 ]
 
-const SENSOR_TYPES = ['SHTC3', 'GY39', 'DS18B20', 'GPS', 'BAT']
+// La batería no se puede activar/desactivar por comando — el firmware siempre la reporta.
+const SENSOR_TYPES = ['SHTC3', 'GY39', 'DS18B20', 'GPS']
 
 const STATUS_BADGE: Record<string, string> = {
   pending: 'bg-amber-100 text-amber-700',
@@ -417,9 +415,8 @@ function EmitterPanel({ device, onClose }: { device: EmitterItem; onClose: () =>
   const [showCmdForm, setShowCmdForm] = useState(false)
   const [cmdType, setCmdType] = useState<CommandType>('set_sleep')
   const [cmdSleep, setCmdSleep] = useState(10)
-  const [cmdSensor, setCmdSensor] = useState('SHTC3')
-  const [cmdSF, setCmdSF] = useState(9)
-  const [cmdPower, setCmdPower] = useState(17)
+  const [cmdSensor, setCmdSensor] = useState('GY39')
+  const [cmdEnable, setCmdEnable] = useState(true)
 
   const lastSeen = device.last_seen
     ? formatDistanceToNow(new Date(device.last_seen), { addSuffix: true, locale: es })
@@ -450,9 +447,7 @@ function EmitterPanel({ device, onClose }: { device: EmitterItem; onClose: () =>
 
   function buildParams(): Record<string, unknown> {
     if (cmdType === 'set_sleep') return { minutes: cmdSleep }
-    if (cmdType === 'disable_sensor' || cmdType === 'enable_sensor') return { sensor: cmdSensor }
-    if (cmdType === 'set_lora_sf') return { sf: cmdSF }
-    if (cmdType === 'set_lora_power') return { dbm: cmdPower }
+    if (cmdType === 'enable_sensor') return { sensor: cmdSensor, enable: cmdEnable }
     return {}
   }
 
@@ -578,25 +573,25 @@ function EmitterPanel({ device, onClose }: { device: EmitterItem; onClose: () =>
                   <Input type="number" min={1} max={60} value={cmdSleep} onChange={(e) => setCmdSleep(Number(e.target.value))} />
                 </div>
               )}
-              {(cmdType === 'disable_sensor' || cmdType === 'enable_sensor') && (
-                <div className="space-y-1">
-                  <label className="text-xs text-gray-500">Sensor</label>
-                  <select value={cmdSensor} onChange={(e) => setCmdSensor(e.target.value)}
-                    className="w-full border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-300">
-                    {SENSOR_TYPES.map((s) => <option key={s}>{s}</option>)}
-                  </select>
-                </div>
-              )}
-              {cmdType === 'set_lora_sf' && (
-                <div className="space-y-1">
-                  <label className="text-xs text-gray-500">Spreading Factor (7–12)</label>
-                  <Input type="number" min={7} max={12} value={cmdSF} onChange={(e) => setCmdSF(Number(e.target.value))} />
-                </div>
-              )}
-              {cmdType === 'set_lora_power' && (
-                <div className="space-y-1">
-                  <label className="text-xs text-gray-500">Potencia (2–20 dBm)</label>
-                  <Input type="number" min={2} max={20} value={cmdPower} onChange={(e) => setCmdPower(Number(e.target.value))} />
+              {cmdType === 'enable_sensor' && (
+                <div className="space-y-2">
+                  <div className="space-y-1">
+                    <label className="text-xs text-gray-500">Sensor</label>
+                    <select value={cmdSensor} onChange={(e) => setCmdSensor(e.target.value)}
+                      className="w-full border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-300">
+                      {SENSOR_TYPES.map((s) => <option key={s}>{s}</option>)}
+                    </select>
+                  </div>
+                  <div className="flex gap-2">
+                    {[{ v: true, label: 'Activar' }, { v: false, label: 'Desactivar' }].map(({ v, label }) => (
+                      <button key={label} type="button" onClick={() => setCmdEnable(v)}
+                        className={`flex-1 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
+                          cmdEnable === v ? 'bg-green-600 text-white border-green-600' : 'border-gray-300 hover:bg-white'
+                        }`}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
 
