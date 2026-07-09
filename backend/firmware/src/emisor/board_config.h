@@ -44,9 +44,10 @@
 #define BAT_V_MIN      3.20f   // por debajo de esto = 0%
 
 // --- Sensores habilitados por defecto (sobreescribible vía NVS/comando remoto) ---
-// Nodo actual: GY-39 (BME280) como sensor ambiental físico instalado.
-#define SENSOR_SHTC3_DEFAULT    false
-#define SENSOR_GY39_DEFAULT     true
+// Ambiente: SHTC3 integrado en la placa GY-39 (HiLetgo), leído directo por
+// su dirección I2C estándar 0x70. El SPL06-007 (presión) de esa misma
+// placa no está soportado — no es compatible con el driver BME280.
+#define SENSOR_SHTC3_DEFAULT    true
 #define SENSOR_DS18B20_DEFAULT  true
 #define SENSOR_GPS_DEFAULT      true
 

@@ -56,11 +56,10 @@ const BOARDS = [
 ]
 
 const SENSOR_OPTIONS = [
-  { type: 'SHTC3',   label: 'SHTC3',   desc: 'Temp/Humedad Ambiente',     icon: '🌡️' },
-  { type: 'GY39',    label: 'GY-39',   desc: 'Temp/Hum/Presión (BME280)', icon: '🌦️' },
-  { type: 'DS18B20', label: 'DS18B20', desc: 'Temperatura Sonda',         icon: '🔌' },
-  { type: 'GPS',     label: 'GPS',     desc: 'Posición GPS',              icon: '📍' },
-  { type: 'BAT',     label: 'BAT',     desc: 'Batería (ADC)',             icon: '🔋' },
+  { type: 'SHTC3',   label: 'SHTC3',   desc: 'Temp/Humedad Ambiente', icon: '🌡️' },
+  { type: 'DS18B20', label: 'DS18B20', desc: 'Temperatura Sonda',     icon: '🔌' },
+  { type: 'GPS',     label: 'GPS',     desc: 'Posición GPS',          icon: '📍' },
+  { type: 'BAT',     label: 'BAT',     desc: 'Batería (ADC)',         icon: '🔋' },
 ]
 
 // ─── Step indicator ───────────────────────────────────────────────────────────
@@ -220,7 +219,6 @@ export default function FirmwareWizardPage() {
       behavior: beh,
       sensors_default: {
         shtc3:   selectedSensors.includes('SHTC3'),
-        gy39:    selectedSensors.includes('GY39'),
         ds18b20: selectedSensors.includes('DS18B20'),
         gps:     selectedSensors.includes('GPS'),
       },

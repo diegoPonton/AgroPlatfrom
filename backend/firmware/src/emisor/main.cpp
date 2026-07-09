@@ -1,6 +1,12 @@
 // =====================================================
 // EMISOR (NODO SENSOR) -> LoRa (RFM95W) -> RECEPTOR
-// SHTC3/GY-39 + DS18B20 + GPS + batería -> JSON -> LoRa
+// SHTC3 + DS18B20 + GPS + batería -> JSON -> LoRa
+//
+// El sensor ambiente físico es la placa GY-39 (HiLetgo,
+// LTR308ALS+SPL06-007+SHTC3), pero solo se lee el SHTC3 que
+// trae integrado — expone su dirección I2C estándar (0x70) en
+// el mismo bus. El SPL06-007 (presión) no es compatible con el
+// driver BME280 (registros distintos) y no está implementado.
 //
 // Tras cada TX abre una ventana de escucha (CMD_WINDOW_MS)
 // por si el receptor relay-ea un comando pendiente para
@@ -8,7 +14,6 @@
 // =====================================================
 #include <Wire.h>
 #include <Adafruit_SHTC3.h>
-#include <Adafruit_BME280.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <TinyGPSPlus.h>
@@ -30,7 +35,6 @@ String g_device_id    = "";
 int    g_sleep_min    = DEFAULT_SLEEP_MIN;
 
 bool g_en_SHTC3   = SENSOR_SHTC3_DEFAULT;
-bool g_en_GY39    = SENSOR_GY39_DEFAULT;
 bool g_en_DS18B20 = SENSOR_DS18B20_DEFAULT;
 bool g_en_GPS     = SENSOR_GPS_DEFAULT;
 
@@ -64,8 +68,6 @@ struct GpsReading {
 TinyGPSPlus gps;
 HardwareSerial GPSSerial(1);
 Adafruit_SHTC3 shtc3;
-Adafruit_BME280 gy39;
-bool gy39Found = false;
 OneWire oneWire(DS18B20_PIN);
 DallasTemperature ds(&oneWire);
 DeviceAddress dsAddr;
@@ -96,7 +98,6 @@ void setupBatteryAdc();
 float readVbat();
 int vbatToPercent(float v);
 THReading readSHTC3();
-THReading readGY39();
 DSReading readDS18B20();
 void buildJsonPayload(String &out, const THReading&, const DSReading&,
                       const GpsReading&, float vbat, int batPct, int gpsLevel);
@@ -117,7 +118,6 @@ void loadConfig() {
     g_device_id      = nvsId;
     g_sleep_min      = prefs.getInt("sleep_min",   DEFAULT_SLEEP_MIN);
     g_en_SHTC3       = prefs.getBool("en_shtc3",   SENSOR_SHTC3_DEFAULT);
-    g_en_GY39        = prefs.getBool("en_gy39",    SENSOR_GY39_DEFAULT);
     g_en_DS18B20     = prefs.getBool("en_ds18b20", SENSOR_DS18B20_DEFAULT);
     g_en_GPS         = prefs.getBool("en_gps",     SENSOR_GPS_DEFAULT);
     prefs.end();
@@ -203,15 +203,6 @@ THReading readSHTC3() {
   return {t.temperature, h.relative_humidity, 0, false, true};
 }
 
-THReading readGY39() {
-  if (!g_en_GY39 || !gy39Found) return {0, 0, 0, false, false};
-  float t = gy39.readTemperature();
-  float h = gy39.readHumidity();
-  float p = gy39.readPressure() / 100.0F; // Pa -> hPa
-  if (isnan(t) || isnan(h)) return {0, 0, 0, false, false};
-  return {t, h, p, true, true};
-}
-
 DSReading readDS18B20() {
   if (!g_en_DS18B20 || !dsFound) return {0, false};
   ds.requestTemperatures();
@@ -233,7 +224,7 @@ void buildJsonPayload(String &out, const THReading& amb, const DSReading& probe,
   DynamicJsonDocument doc(512);
   doc["device_id"] = g_device_id;
 
-  if (g_en_SHTC3 || g_en_GY39) {
+  if (g_en_SHTC3) {
     JsonObject a = doc.createNestedObject("amb");
     a["ok"] = amb.ok;
     if (amb.ok) {
@@ -311,7 +302,6 @@ void processCommand(const String& rawCmd) {
     if (sensor) {
       prefs.begin("agro", false);
       if (strcmp(sensor, "shtc3")   == 0) { g_en_SHTC3   = en; prefs.putBool("en_shtc3",   en); }
-      if (strcmp(sensor, "gy39")    == 0) { g_en_GY39    = en; prefs.putBool("en_gy39",    en); }
       if (strcmp(sensor, "ds18b20") == 0) { g_en_DS18B20  = en; prefs.putBool("en_ds18b20", en); }
       if (strcmp(sensor, "gps")     == 0) { g_en_GPS      = en; prefs.putBool("en_gps",     en); }
       prefs.end();
@@ -366,10 +356,6 @@ void setup() {
 
   if (g_en_SHTC3) {
     Serial.println(shtc3.begin() ? "  SHTC3   : OK" : "  SHTC3   : NO encontrado");
-  }
-  if (g_en_GY39) {
-    gy39Found = gy39.begin(0x76) || gy39.begin(0x77);
-    Serial.println(gy39Found ? "  GY-39   : OK" : "  GY-39   : NO encontrado");
   }
   if (g_en_DS18B20) {
     ds.begin(); ds.setResolution(DS18B20_RESOLUTION);
@@ -435,7 +421,7 @@ void setup() {
 void loop() {
   if (g_en_GPS) readGPS();
 
-  THReading amb   = g_en_GY39 ? readGY39() : readSHTC3();
+  THReading amb   = readSHTC3();
   DSReading probe = readDS18B20();
   float vbat   = readVbat();
   int   batPct = vbatToPercent(vbat);

@@ -390,7 +390,7 @@ const CMD_OPTIONS: { value: CommandType; label: string; description: string }[] 
 ]
 
 // La batería no se puede activar/desactivar por comando — el firmware siempre la reporta.
-const SENSOR_TYPES = ['SHTC3', 'GY39', 'DS18B20', 'GPS']
+const SENSOR_TYPES = ['SHTC3', 'DS18B20', 'GPS']
 
 const STATUS_BADGE: Record<string, string> = {
   pending: 'bg-amber-100 text-amber-700',
@@ -415,7 +415,7 @@ function EmitterPanel({ device, onClose }: { device: EmitterItem; onClose: () =>
   const [showCmdForm, setShowCmdForm] = useState(false)
   const [cmdType, setCmdType] = useState<CommandType>('set_sleep')
   const [cmdSleep, setCmdSleep] = useState(10)
-  const [cmdSensor, setCmdSensor] = useState('GY39')
+  const [cmdSensor, setCmdSensor] = useState('SHTC3')
   const [cmdEnable, setCmdEnable] = useState(true)
 
   const lastSeen = device.last_seen
